@@ -1,0 +1,153 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [dev, qa, main] # main = production
+  pull_request:
+    branches: [main, dev, qa]
+
+permissions:
+  contents: read
+  id-token: write # required for AWS OIDC
+
+jobs:
+  # Required status check. On PRs it only builds + scans (no AWS access).
+  # On push it also pushes the image to the env's ECR and (for main) tags a release.
+  build-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to push the git tag on main
+      id-token: write
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags, needed for semver bump
+
+      # Always validate the image builds (works on PRs too, no registry needed).
+      - name: Build image (validation)
+        run: docker build -t app:ci .
+
+      - name: SonarQube scan
+        if: env.SONAR_TOKEN != ''
+        uses: sonarsource/sonarqube-scan-action@v4
+
+      - name: Snyk container scan
+        if: env.SNYK_TOKEN != ''
+        continue-on-error: true # report vulns without failing the build
+        uses: snyk/actions/docker@master
+        with:
+          image: app:ci
+
+      # ---- Everything below runs only on a real push (not PRs) ----
+      - name: Map branch -> environment / role / ECR
+        id: cfg
+        if: github.event_name == 'push'
+        run: |
+          case "${{ github.ref_name }}" in
+            dev)  echo "env=dev"  >> "$GITHUB_OUTPUT"; echo "role=${{ vars.ROLE_ARN_DEV }}"  >> "$GITHUB_OUTPUT"; echo "ecr=${{ vars.ECR_DEV }}"  >> "$GITHUB_OUTPUT" ;;
+            qa)   echo "env=qa"   >> "$GITHUB_OUTPUT"; echo "role=${{ vars.ROLE_ARN_QA }}"   >> "$GITHUB_OUTPUT"; echo "ecr=${{ vars.ECR_QA }}"   >> "$GITHUB_OUTPUT" ;;
+            main) echo "env=prod" >> "$GITHUB_OUTPUT"; echo "role=${{ vars.ROLE_ARN_PROD }}" >> "$GITHUB_OUTPUT"; echo "ecr=${{ vars.ECR_PROD }}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unsupported branch ${{ github.ref_name }}"; exit 1 ;;
+          esac
+
+      # prod (main): bump latest vX.Y.Z tag. dev/qa: use the commit SHA.
+      - name: Determine version / image tag
+        id: version
+        if: github.event_name == 'push'
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            git fetch --tags --force
+            latest=$(git tag -l 'v*.*.*' | sort -V | tail -n1)
+            latest=${latest:-v0.0.0}
+            v=${latest#v}
+            major=${v%%.*}; rest=${v#*.}; minor=${rest%%.*}; patch=${rest##*.}
+            version="v${major}.${minor}.$((patch + 1))"
+          else
+            version="${GITHUB_SHA::12}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      - name: Create & push git tag (prod only)
+        if: github.event_name == 'push' && github.ref_name == 'main'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Configure AWS credentials (OIDC, env-scoped role)
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.cfg.outputs.role }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        if: github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag & push image to the env's ECR
+        id: push
+        if: github.event_name == 'push'
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ steps.cfg.outputs.ecr }}
+          TAG: ${{ steps.version.outputs.version }}
+        run: |
+          IMAGE="$REGISTRY/$REPOSITORY:$TAG"
+          docker tag app:ci "$IMAGE"
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Pushed $IMAGE"
+
+  deploy:
+    needs: build-and-scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The branch selects the matching GitHub environment (where the approval
+    # gate / wait timer lives). main maps to the "prod" environment.
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, env-scoped role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }} # env-scoped to this environment
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Fetch current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}" \
+            --query taskDefinition \
+            | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > task-def.json
+
+      - name: Render task definition with new image
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ vars.CONTAINER_NAME }}
+          image: ${{ needs.build-and-scan.outputs.image }}
+
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true

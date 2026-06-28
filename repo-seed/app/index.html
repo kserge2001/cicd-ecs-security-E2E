@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud & DevOps Engineer Portfolio</title>
+    <!-- Google Fonts & FontAwesome Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-blue: #38bdf8;
+            --accent-green: #34d399;
+            --border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 1050px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+        }
+
+        /* Glassmorphism Card Style */
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Left Column / Sidebar */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+            height: fit-content;
+        }
+
+        .profile-section {
+            text-align: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 25px;
+        }
+
+        .profile-icon {
+            font-size: 3rem;
+            color: var(--accent-blue);
+            margin-bottom: 15px;
+            background: rgba(56, 189, 248, 0.1);
+            width: 90px;
+            height: 90px;
+            line-height: 90px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 5px;
+        }
+
+        .title {
+            color: var(--accent-blue);
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 15px;
+        }
+
+        .social-links a {
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+            margin: 0 8px;
+            transition: color 0.3s ease;
+        }
+
+        .social-links a:hover {
+            color: var(--accent-green);
+        }
+
+        /* Info List */
+        .info-list {
+            list-style: none;
+            font-size: 0.9rem;
+        }
+
+        .info-list li {
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-secondary);
+        }
+
+        .info-list i {
+            color: var(--accent-blue);
+            width: 16px;
+        }
+
+        /* Skills Tags */
+        .skills-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .skill-tag {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+
+        .skill-tag:hover {
+            background: var(--accent-blue);
+            color: var(--bg-color);
+            font-weight: 500;
+            transform: translateY(-2px);
+        }
+
+        /* Main Content Column */
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        section h2 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            position: relative;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        section h2::after {
+            content: '';
+            flex-grow: 1;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        section h2 i {
+            color: var(--accent-green);
+        }
+
+        .summary-text {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        /* Timeline / Experience */
+        .timeline {
+            position: relative;
+            border-left: 2px solid var(--border-color);
+            padding-left: 20px;
+            margin-left: 10px;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 25px;
+        }
+
+        .timeline-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -27px;
+            top: 6px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent-blue);
+            border: 2px solid var(--bg-color);
+        }
+
+        .job-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .company-date {
+            font-size: 0.85rem;
+            color: var(--accent-blue);
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .job-desc {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            list-style-type: square;
+            padding-left: 15px;
+        }
+
+        .job-desc li {
+            margin-bottom: 5px;
+        }
+
+        /* Projects Grid */
+        .projects-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .project-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            transition: transform 0.3s ease;
+        }
+
+        .project-card:hover {
+            transform: scale(1.02);
+            border-color: var(--accent-blue);
+        }
+
+        .project-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: var(--accent-green);
+        }
+
+        .project-desc {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 850px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            .projects-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <!-- Profile Card -->
+            <div class="card profile-section">
+                <div class="profile-icon">
+                    <i class="fa-solid : code-branch fa-cloud"></i>
+                </div>
+                <h1>Serge Kamgang</h1>
+                <div class="title">Cloud & DevOps Engineer</div>
+                <div class="social-links">
+                    <a href="#" target="_blank"><i class="fab fa-github"></i></a>
+                    <a href="#" target="_blank"><i class="fab fa-linkedin"></i></a>
+                    <a href="#" target="_blank"><i class="fa-solid fa-globe"></i></a>
+                </div>
+            </div>
+
+            <!-- Contact Card -->
+            <div class="card">
+                <ul class="info-list">
+                    <li><i class="fa-solid fa-envelope"></i> alex.mercer@email.com</li>
+                    <li><i class="fa-solid fa-phone"></i> +1 (555) 019-2834</li>
+                    <li><i class="fa-solid fa-location-dot"></i> Austin, TX (Open to Remote)</li>
+                </ul>
+            </div>
+
+            <!-- Skills Card -->
+            <div class="card">
+                <h3 style="font-size: 1rem; margin-bottom: 12px; font-weight: 600;">Core Tech Stack</h3>
+                <div class="skills-container">
+                    <span class="skill-tag">AWS</span>
+                    <span class="skill-tag">Docker</span>
+                    <span class="skill-tag">Kubernetes</span>
+                    <span class="skill-tag">Terraform</span>
+                    <span class="skill-tag">CI/CD (GitHub Actions)</span>
+                    <span class="skill-tag">Linux / Bash</span>
+                    <span class="skill-tag">Python</span>
+                    <span class="skill-tag">Prometheus & Grafana</span>
+                    <span class="skill-tag">ArgoCD</span>
+                    <span class="skill-tag">GitOps</span>
+                </div>
+            </div>
+
+            <!-- Certifications Card -->
+            <div class="card">
+                <h3 style="font-size: 1rem; margin-bottom: 12px; font-weight: 600;">Certifications</h3>
+                <ul class="info-list" style="font-size: 0.85rem;">
+                    <li><i class="fa-solid fa-award"></i> AWS Certified Solutions Architect</li>
+                    <li><i class="fa-solid fa-award"></i> Certified Kubernetes Administrator (CKA)</li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            
+            <!-- About Section -->
+            <section class="card">
+                <h2><i class="fa-solid fa-user"></i> Professional Summary</h2>
+                <p class="summary-text">
+                    Result-driven Cloud and DevOps Engineer with 3 years of hands-on experience designing, automating, and optimizing cloud-native infrastructure. Proven track record in accelerating deployment cycles by implementing robust CI/CD pipelines, containerizing legacy architectures, and enforcing Infrastructure as Code (IaC) principles. Passionate about system reliability, scalability, and GitOps workflows.
+                </p>
+            </section>
+
+            <!-- Experience Section -->
+            <section class="card">
+                <h2><i class="fa-solid fa-briefcase"></i> Experience</h2>
+                <div class="timeline">
+                    
+                    <div class="timeline-item">
+                        <div class="job-title">DevOps Engineer</div>
+                        <div class="company-date">
+                            <span>CloudScale Technologies</span>
+                            <span>2024 - Present</span>
+                        </div>
+                        <ul class="job-desc">
+                            <li>Provisioned and managed multi-environment AWS infrastructure using Terraform modules, reducing setup times by 40%.</li>
+                            <li>Designed and maintained production EKS (Kubernetes) clusters, improving application scaling and fault-tolerance.</li>
+                            <li>Built end-to-end GitOps deployment pipelines using GitHub Actions and ArgoCD for seamless microservices delivery.</li>
+                            <li>Implemented comprehensive monitoring and alerting grids via Prometheus and Grafana, lowering MTTR by 25%.</li>
+                        </ul>
+                    </div>
+
+                    <div class="timeline-item">
+                        <div class="job-title">Junior Cloud Engineer</div>
+                        <div class="company-date">
+                            <span>Nexus Software Solutions</span>
+                            <span>2023 - 2024</span>
+                        </div>
+                        <ul class="job-desc">
+                            <li>Successfully containerized 15+ legacy applications utilizing Docker, stabilizing local development environments.</li>
+                            <li>Managed and optimized automated CI/CD builds, decreasing build failures by handling dependency caching.</li>
+                            <li>Configured AWS VPCs, IAM roles, and security groups following the principle of least privilege.</li>
+                            <li>Wrote Python and Bash scripts to automate daily backup operations and routine system maintenance tasks.</li>
+                        </ul>
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- Key Projects Section -->
+            <section class="card">
+                <h2><i class="fa-solid fa-code-branch"></i> Key Projects</h2>
+                <div class="projects-grid">
+                    
+                    <div class="project-card">
+                        <div class="project-title">GitOps Automated EKS Cluster</div>
+                        <p class="project-desc">Provisioned an AWS EKS infrastructure entirely via Terraform, tying container deployments to Git state using ArgoCD for declarative system state management.</p>
+                    </div>
+
+                    <div class="project-card">
+                        <div class="project-title">Serverless Log Processor</div>
+                        <p class="project-desc">Engineered a Python-driven AWS Lambda pipeline that intercepts S3 event triggers to parse and clean high-volume application logs before routing to DynamoDB.</p>
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- Education Section -->
+            <section class="card">
+                <h2><i class="fa-solid fa-graduation-cap"></i> Education</h2>
+                <div style="display: flex; justify-content: space-between; font-size: 0.95rem;">
+                    <div>
+                        <strong style="font-weight: 600;">B.S. in Computer Science</strong><br>
+                        <span style="color: var(--text-secondary); font-size: 0.9rem;">State University</span>
+                    </div>
+                    <span style="color: var(--accent-blue); font-size: 0.85rem;">Graduated 2023</span>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+</body>
+</html>

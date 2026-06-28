@@ -1,0 +1,21 @@
+# ---- Secrets / variable files (NEVER commit) ----
+*.tfvars
+*.tfvars.json
+.tf-secrets
+
+# ---- Terraform state (may contain secrets in plaintext) ----
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# ---- Terraform working dirs / plans / lock cache ----
+.terraform/
+.terraform.tfstate.lock.info
+*.tfplan
+
+# Keep the provider lock file under version control (recommended):
+!.terraform.lock.hcl
+
+# ---- Local tooling / editor ----
+.claude/

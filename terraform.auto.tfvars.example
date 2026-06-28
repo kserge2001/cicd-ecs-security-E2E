@@ -1,0 +1,62 @@
+# terraform.auto.tfvars.example
+# Copy to terraform.auto.tfvars and fill in. terraform.auto.tfvars is gitignored.
+# The GitHub token is NOT set here — export it instead:
+#   export TF_VAR_github_token=ghp_xxxxxxxxxxxxxxxx   (scopes: repo, workflow, read:org, delete_repo)
+
+aws_profile  = "default"          # a configured AWS CLI profile
+aws_region   = "us-east-1"
+github_owner = "your-github-username"
+repo_name    = "pipeline-lab-full-cicd"
+
+# DNS + TLS — the wildcard cert MUST be in aws_region and cover *.<domain>
+domain              = "example.com"
+hosted_zone_id      = "ZXXXXXXXXXXXXXXXXXXXX"
+acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Environments: dev/qa/prod. main = production (prod.branch = "main").
+# Reviewers must be real GitHub usernames.
+environments = {
+  dev = {
+    branch             = "dev"
+    subdomain          = "dev"
+    required_reviewers = []
+    protect_branch     = false
+  }
+  qa = {
+    branch             = "qa"
+    subdomain          = "qa"
+    required_reviewers = ["your-github-username"]
+    protect_branch     = true
+  }
+  prod = {
+    branch             = "main" # production deploys from main
+    subdomain          = "prod"
+    required_reviewers = ["your-github-username"]
+    protect_branch     = true
+    wait_timer         = 1
+  }
+}
+
+# Per-env secret demoed in the lab (resolves only after approval on qa/prod).
+environment_secrets = {
+  dev  = { APP_ENV_SECRET = "dev-secret" }
+  qa   = { APP_ENV_SECRET = "qa-secret" }
+  prod = { APP_ENV_SECRET = "prod-secret" }
+}
+
+# Optional scanner tokens. Leave {} to skip the scan steps.
+repo_secrets = {
+  # SONAR_TOKEN    = "..."
+  # SONAR_HOST_URL = "https://sonarcloud.io"
+  # SNYK_TOKEN     = "..."
+}
+
+# Set false if the GitHub Actions OIDC provider already exists in the account.
+create_oidc_provider = true
+
+# Solo-repo review gates (you can't approve your own PR/deploy):
+#   required_pr_approvals = 0  -> CI checks still required, no human PR approval
+#   prevent_self_review   = false -> you can approve your own qa/prod deploys
+# For a real team, use the defaults (1 approval, self-review prevented).
+required_pr_approvals = 0
+prevent_self_review   = false
