@@ -59,8 +59,8 @@ There is a clear ladder of maturity. Climb as high as your platform allows.
 | Tier | Approach | Lifetime | Blast radius | Verdict |
 |---|---|---|---|---|
 | 0 | Hardcoded in source / Dockerfile | Forever (until rotated) | Everyone with repo or image access | Never |
-| 1 | CI secret store (GitHub Actions secrets) | Until rotated | Anyone who can run a job | Baseline acceptable |
-| 2 | Short-lived OIDC / workload identity | Minutes | A single job run | Strongly preferred |
+| 1 | CI secret store (GitHub Actions secrets) holding a long-lived credential | Until manually rotated | Anyone who can run a job | Last resort: only when the provider has no federation option |
+| 2 | Short-lived OIDC / workload identity (keyless) | Minutes | A single job run | The baseline for any cloud or registry that supports it |
 | 3 | External secrets manager + dynamic secrets | Seconds to minutes, generated on demand | One job, auto-revoked | Best |
 
 #### Why OIDC keyless auth beats stored keys (and how this repo does it)
@@ -98,6 +98,8 @@ Benefits over stored keys:
 - No long-lived AWS secret to leak, rotate, or audit.
 - Credentials expire automatically when the job ends.
 - Trust is bound to identity attributes (repo, branch, environment), not possession of a string.
+
+Some third-party SaaS tokens (a Slack webhook, a SonarQube token) cannot be federated and must live in the CI secret store. That is a legitimate Tier 1 use: keep them non-privileged, scope them tightly, and rotate them. Tier 1 is only a "last resort" when used to hold a credential that *could* have been OIDC-federated, such as a static AWS access key.
 
 Tier 3 goes one step further: even app-level secrets (a DB password, an API token) are generated **on demand** with a short TTL by a secrets manager such as Vault, so a leaked secret is useless minutes later.
 
@@ -155,7 +157,7 @@ GitHub automatically masks registered secret values in logs (they appear as `***
 
 #### Why secrets are not passed to fork PRs, and the `pull_request_target` danger
 
-For `pull_request` events from a **fork**, GitHub deliberately withholds secrets and gives a read-only `GITHUB_TOKEN`. This is why an untrusted contributor cannot steal your credentials by opening a PR.
+For `pull_request` events from a **fork**, GitHub deliberately withholds secrets and downgrades the `GITHUB_TOKEN` to read-only permissions (it cannot push, comment, or otherwise mutate the base repo). This is why an untrusted contributor cannot steal your credentials by opening a PR. Workflow runs from forks also require approval before they run if you enable that setting under Actions > General.
 
 `pull_request_target` is different and dangerous: it runs in the context of the **base** repo (with secrets) but can be triggered by a fork PR. If such a workflow checks out and executes the PR's code, attacker-controlled code runs **with your secrets**. Rules:
 
@@ -197,15 +199,24 @@ This repo follows that pattern: the top-level grant is minimal, and `contents: w
 | HashiCorp Vault | Central server, **dynamic secrets**, short TTL, leases, broad backends | Generates per-request DB/cloud creds, auto-revokes, strong audit | Highest assurance, multi-cloud, dynamic credentials |
 | AWS Secrets Manager | Managed AWS store with built-in rotation | Native rotation, IAM-scoped, tight AWS integration | AWS-centric workloads needing managed rotation |
 | AWS SSM Parameter Store | Managed key/value, SecureString via KMS | Cheap, simple, KMS-encrypted | Config + lighter secrets on AWS, cost-sensitive |
-| External Secrets Operator (ESO) | k8s operator syncing from a manager into `Secret` objects | Keeps the real secret in the manager, syncs into the cluster | Kubernetes pulling from Vault/ASM/SSM |
-| Sealed Secrets | Controller decrypts cluster-specific encrypted secrets in git | Encrypted secret is safe to commit, GitOps-friendly | k8s GitOps where secrets live in the repo |
-| SOPS + age/KMS | File-level encryption of YAML/JSON values | Encrypt secrets in git, decrypt in CI with a KMS/age key | Terraform/k8s manifests with encrypted-in-repo secrets |
+| External Secrets Operator (ESO) | k8s operator syncing from a manager into `Secret` objects; on EKS it authenticates via **IRSA** (or EKS Pod Identity), so no static keys live in the cluster | Keeps the real secret in the manager, syncs into the cluster, source of truth stays external | Kubernetes pulling from Vault/ASM/SSM |
+| Sealed Secrets | Bitnami controller decrypts cluster-specific `SealedSecret` CRDs into `Secret` objects; only that cluster's private key can decrypt | Encrypted secret is safe to commit, GitOps-friendly | k8s GitOps where the encrypted material lives in the repo |
+| SOPS + age/KMS | File-level encryption of individual YAML/JSON values (keys stay readable, values encrypted) using age or a cloud KMS key | Encrypt secrets in git, decrypt in CI or in-cluster with a KMS/age key | Terraform/Helm/k8s manifests with encrypted-in-repo secrets |
 
 Guidance:
 
-- Use **dynamic secrets** (Vault, or ASM/RDS rotation) whenever the backend supports them: a leaked credential expires on its own.
-- On Kubernetes, prefer **ESO** so the source of truth stays in the manager, or **Sealed Secrets / SOPS** when you want encrypted-in-git GitOps.
-- **SOPS + KMS** is a pragmatic middle ground for Terraform/Helm: secrets are committed encrypted and decrypted in CI using a cloud KMS key the pipeline can assume via OIDC.
+- Use **dynamic secrets** (Vault, or AWS Secrets Manager / RDS managed rotation) whenever the backend supports them: a leaked credential expires or is rotated out from under the attacker.
+- On Kubernetes, prefer **ESO** so the source of truth stays in the manager, or **Sealed Secrets / SOPS** when you want the encrypted material to live in git for pure GitOps.
+- **SOPS + KMS** is a pragmatic middle ground for Terraform/Helm: secrets are committed encrypted and decrypted in CI using a cloud KMS key the pipeline can assume via OIDC (nothing decrypts the file without IAM access to the KMS key).
+
+#### Tie-in: secrets under Argo CD GitOps (see [`02-deploy-to-eks.md`](02-deploy-to-eks.md))
+
+This repo's EKS path is **GitOps with Argo CD**, where the cluster's desired state lives in a config repo. The hard rule there is the same: **no plaintext secrets in Git**. Two patterns satisfy it, and the EKS guide uses both:
+
+- **External Secrets Operator with IRSA (recommended on AWS).** The real values stay in AWS Secrets Manager / SSM; an `ExternalSecret` resource in the config repo references them by key, and ESO (authenticated by IRSA, no static keys) syncs them into a Kubernetes `Secret`. Git only ever contains pointers, never values.
+- **Sealed Secrets or SOPS + KMS** when you must keep the encrypted material in Git itself (no central manager available). Only the in-cluster controller (Sealed Secrets) or a KMS/age key (SOPS) can decrypt.
+
+For app-to-AWS access at runtime, give the pod's `ServiceAccount` an **IRSA** (or EKS Pod Identity) role rather than mounting a long-lived key in a `Secret`. See [`02-deploy-to-eks.md`](02-deploy-to-eks.md) section 9 for the concrete `ExternalSecret` example.
 
 ---
 
@@ -297,12 +308,20 @@ flowchart LR
 
 ### B.1 Security
 
-- **Supply chain.** Aim up the **SLSA** levels (source/build integrity, then provenance, then hardened isolated builds). Produce **provenance** attestations and an **SBOM** (Syft, `cyclonedx`). **Sign** images and attestations with **cosign** (keyless cosign uses the same OIDC identity model as this repo's AWS auth). **Pin actions by full commit SHA**, not floating tags, and enforce a dependency policy (allowlists, Dependabot/Renovate, license checks).
+- **Supply chain.** Climb the **SLSA** Build track. SLSA v1.0 defines Build levels L1 (provenance exists), L2 (provenance is signed and produced by a hosted build service), and L3 (the build runs in a hardened, isolated environment so provenance cannot be forged). Produce **build provenance** (what built this artifact, from which source and builder) and an **SBOM**. Generate the SBOM with **Syft** in either CycloneDX or SPDX format (CycloneDX and SPDX are SBOM *formats*; Syft and `trivy` are tools that emit them). **Sign** images and attestations with **cosign**. Keyless cosign obtains a short-lived signing certificate from Sigstore's Fulcio CA using an OIDC token (the same OIDC trust pattern this repo uses for AWS, but the relying party is Fulcio, not AWS STS) and records the signature in the Rekor transparency log, so no long-lived signing key is stored. On GitHub specifically, `actions/attest-build-provenance` produces a signed provenance attestation tied to the run, which `gh attestation verify` (or `cosign verify-attestation`) can check at deploy time. **Pin actions by full commit SHA**, not floating tags, and enforce a dependency policy (allowlists, Dependabot/Renovate, license checks).
 
   ```yaml
   # Pin by SHA, not by tag, so a hijacked tag cannot inject code.
   - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+  # Emit a signed build-provenance attestation for the pushed image (keyless, OIDC).
+  - uses: actions/attest-build-provenance@v1
+    with:
+      subject-name: <registry>/<repo>
+      subject-digest: ${{ steps.build.outputs.digest }}
   ```
+
+  Verification belongs at the deploy gate, not just at build time: refuse to deploy an image whose signature or provenance does not verify (for example with a Kyverno verifyImages policy in-cluster, or `cosign verify` / `gh attestation verify` in the deploy job).
 
 - **Least privilege everywhere.** Per-environment, narrowly-scoped roles (as in [`iam.tf`](../iam.tf)), read-only `GITHUB_TOKEN` by default, scoped registry permissions.
 - **Isolation / ephemeral runners.** Prefer fresh, single-use runners so one job cannot poison the next. Self-hosted runners on shared hosts are a lateral-movement risk.
@@ -395,7 +414,7 @@ deny[msg] {
 #### Summary checklist
 
 - [ ] Keyless cloud auth (OIDC), least-privilege per environment.
-- [ ] Pinned actions by SHA, SBOM + provenance + signing (cosign).
+- [ ] Pinned actions by SHA; SBOM (Syft) + signed build provenance + cosign signing, verified at the deploy gate.
 - [ ] Ephemeral, isolated runners; separation of duties enforced.
 - [ ] Fast pipelines via caching, parallelism, and build avoidance.
 - [ ] Idempotent, re-runnable jobs; retries only for transient errors.
@@ -427,3 +446,4 @@ deny[msg] {
 - [`github.tf`](../github.tf): repo/environment variables and secrets, environment protection and approval gates, branch protection.
 - [`iam.tf`](../iam.tf): GitHub OIDC provider and per-environment, least-privilege deploy roles with `sub`-pinned trust.
 - [`repo-seed/.github/workflows/ci-cd.yml`](../repo-seed/.github/workflows/ci-cd.yml): least-privilege `GITHUB_TOKEN`, OIDC credential configuration, environment-gated deploy job.
+- [`docs/02-deploy-to-eks.md`](02-deploy-to-eks.md): the Argo CD GitOps deployment path, including the "no plaintext secrets in Git" pattern (External Secrets Operator with IRSA, or Sealed Secrets / SOPS).

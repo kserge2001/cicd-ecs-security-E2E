@@ -48,16 +48,19 @@ GitHub maintains a set of standard images. The most common labels:
 | --- | --- | --- |
 | `ubuntu-latest` | Ubuntu (currently 24.04) | Default for most Linux jobs. `ubuntu-24.04`, `ubuntu-22.04` pin a version. |
 | `windows-latest` | Windows Server (currently 2022) | `windows-2025`, `windows-2022` pin a version. |
-| `macos-latest` | macOS (currently 14, Apple silicon) | `macos-15`, `macos-14`, `macos-13` pin a version. Intel images are being retired. |
+| `macos-latest` | macOS (currently 15, Apple silicon) | `macos-15`, `macos-14`, `macos-13` pin a version. Intel images are being retired. |
 
 > The OS that `*-latest` points to changes over time as GitHub rolls forward. Pin an explicit version (for example `ubuntu-24.04`) when you need stability across that transition.
 
-Standard free-tier VM specs (subject to change by GitHub):
+Standard VM specs (subject to change by GitHub). Note that **public** and **private** repos get different standard sizes:
 
 | Runner | vCPU | RAM | SSD (workspace) |
 | --- | --- | --- | --- |
-| Linux / Windows (standard) | 4 | 16 GB | 14 GB |
-| macOS (standard) | 3-4 (Apple silicon) | 7-14 GB | 14 GB |
+| Linux / Windows, public repo | 4 | 16 GB | 14 GB |
+| Linux / Windows, private repo | 2 | 8 GB | 14 GB |
+| macOS (Apple silicon, `macos-latest`) | 3 | 7 GB | 14 GB |
+
+GitHub also offers a smaller **1-vCPU Linux runner** (label `ubuntu-slim`: 1 vCPU, 5 GB RAM) that runs inside a container rather than a full VM, with a lower per-minute price and a **15-minute** per-job time cap. Use it for light jobs (lint, small tests) where you do not need a full VM.
 
 ### Included tooling
 
@@ -94,12 +97,12 @@ A 10-minute macOS job consumes roughly 100 billable minutes. Larger runners are 
 
 ### Larger runners
 
-For heavier workloads, GitHub offers **larger runners** (a paid, configurable tier available on Team and Enterprise plans):
+For heavier workloads, GitHub offers **larger runners** (a paid, configurable tier available to organizations on **GitHub Team or GitHub Enterprise Cloud** plans):
 
-- More vCPU and RAM (for example 8, 16, 32, 64 vCPU configurations).
-- **GPU-enabled** runners for ML/CUDA workloads.
-- **Static outbound IP addresses**, so you can allowlist them on a firewall or private service.
-- Larger disk, and the ability to define **custom runner groups** and labels.
+- More vCPU and RAM (configurations from a few up to 96 vCPU on Linux/Windows).
+- **GPU-enabled** runners for ML/CUDA workloads (in public beta; SKU availability changes).
+- **Static outbound IP addresses** (requires **GitHub Enterprise Cloud**), so you can allowlist them on a firewall or private service. Each account gets a dedicated, exclusive IP range.
+- Larger disk, and the ability to assign runners to **runner groups** and target them by name/label.
 
 You create them under organization or enterprise **Settings -> Actions -> Runners -> New runner -> New GitHub-hosted runner**, give them a name (which becomes the `runs-on` label), and target them like `runs-on: my-big-runner`.
 
@@ -339,6 +342,10 @@ githubConfigUrl: "https://github.com/<OWNER>/<REPO>"   # or org/enterprise URL
 # Reference the pre-created secret (GitHub App shown here)
 githubConfigSecret: arc-github-app
 
+# The runs-on label. If omitted, it defaults to the Helm release name.
+# Set it explicitly so the label is decoupled from the install name.
+runnerScaleSetName: "my-runner-set"
+
 # Autoscaling bounds: 0 means scale fully to zero when idle
 minRunners: 0
 maxRunners: 20
@@ -346,25 +353,30 @@ maxRunners: 20
 # Optional: restrict to a runner group (org/enterprise scoped)
 runnerGroup: "k8s-prod"
 
-# Runner pod template
-template:
-  spec:
-    containers:
-      - name: runner
-        image: ghcr.io/actions/actions-runner:latest
-        command: ["/home/runner/run.sh"]
+# How runner pods build/run containers:
+#   "" (default) no Docker daemon, cannot build images
+#   "dind"       Docker-in-Docker sidecar (requires a privileged container)
+#   "kubernetes" each job step runs as its own pod via container hooks (needs a PVC)
+# containerMode:
+#   type: "kubernetes"
+#   kubernetesModeWorkVolumeClaim:
+#     accessModes: ["ReadWriteOnce"]
+#     storageClassName: "<your-storage-class>"
+#     resources:
+#       requests:
+#         storage: 10Gi
 ```
 
-Runners created by this scale set are **always ephemeral** (one job per pod), so the clean-room model is built in.
+Runners created by this scale set are **always ephemeral** (one job per pod), so the clean-room model is built in. The chart ships a sensible default runner pod (`ghcr.io/actions/actions-runner`); override the `template:` block only when you need a custom runner image or extra volumes.
 
 ### Target the scale set with `runs-on`
 
-The Helm **install name** of the scale set is the label you target:
+The value you target is `runnerScaleSetName` (which defaults to the Helm **release name** if you do not set it explicitly):
 
 ```yaml
 jobs:
   build:
-    runs-on: my-runner-set   # matches the helm install name
+    runs-on: my-runner-set   # matches runnerScaleSetName (or the helm release name)
     steps:
       - uses: actions/checkout@v4
       - run: echo "Running in an ephemeral ARC pod"
@@ -372,32 +384,37 @@ jobs:
 
 ### Building images inside the cluster: container vs dind vs kubernetes mode
 
-Building container images inside a runner pod is the classic pain point, because the pod itself is a container. Options:
+Building container images inside a runner pod is the classic pain point, because the pod itself is a container. ARC controls this with the `containerMode.type` value:
 
-| Mode | How it works | Trade-offs |
+| `containerMode.type` | How it works | Trade-offs |
 | --- | --- | --- |
-| **Default (no Docker)** | Plain runner pod, no Docker daemon | Cannot build images; fine for test/lint/non-Docker jobs |
-| **dind (Docker-in-Docker)** | A `dind` sidecar runs a Docker daemon in the pod | Familiar `docker build`, but usually needs a **privileged** container (security risk) |
-| **kubernetes mode** | ARC schedules each job step as its own pod via a hook | No privileged Docker daemon; needs a configured PVC and hook extension; steps run as pods |
+| `""` (default, unset) | Plain runner pod, no Docker daemon | Cannot build images or run container/service jobs; fine for test/lint/non-Docker jobs |
+| `dind` | ARC adds a Docker-in-Docker sidecar to each runner pod | Familiar `docker build`, but the dind container runs **privileged** (security risk) |
+| `kubernetes` | ARC uses container hooks (`ACTIONS_RUNNER_CONTAINER_HOOKS`) to run each container step as its own pod in the same namespace, sharing a PVC | No privileged Docker daemon; requires a configured `kubernetesModeWorkVolumeClaim` (a `ReadWriteOnce` PVC works for single-pod jobs); container `build` steps still need a daemonless builder |
+
+`kubernetes` mode runs container actions and `container:`/`services:` jobs without a privileged daemon, but it does not by itself give you `docker build`. For that you still need a daemonless builder (below).
 
 For **rootless, daemonless image builds** (the recommended path on Kubernetes), use a purpose-built builder instead of a privileged Docker daemon:
 
-- **BuildKit** (`buildkitd` / `buildctl`, or `docker buildx` against a BuildKit pod): can run rootless.
-- **Kaniko**: builds from a Dockerfile inside a container with no daemon and no privileged mode.
-- **buildah**: daemonless OCI image builds, supports rootless.
+- **BuildKit** (`buildkitd` / `buildctl`, or `docker buildx` against a remote BuildKit instance): actively maintained, supports rootless mode, build cache, multi-arch, and build secrets. This is the recommended default today.
+- **Buildah**: daemonless OCI image builds, supports rootless operation.
+- **Kaniko**: builds from a Dockerfile in a container with no daemon. Note that Google archived the upstream `GoogleContainerTools/kaniko` repository in June 2025 and it is no longer maintained (community forks exist). Prefer BuildKit or Buildah for new pipelines.
 
-Example Kaniko step (no privileged daemon required):
+Example using rootless BuildKit via `buildctl` against a BuildKit pod/service (no privileged daemon on the runner):
 
 ```yaml
-- name: Build and push with Kaniko
+- name: Build and push with rootless BuildKit
   run: |
-    /kaniko/executor \
-      --context "${{ github.workspace }}" \
-      --dockerfile Dockerfile \
-      --destination "<REGISTRY>/<IMAGE>:${{ github.sha }}"
+    buildctl \
+      --addr tcp://buildkitd.buildkit.svc:1234 \
+      build \
+      --frontend dockerfile.v0 \
+      --local context="${{ github.workspace }}" \
+      --local dockerfile="${{ github.workspace }}" \
+      --output type=image,name=<REGISTRY>/<IMAGE>:${{ github.sha }},push=true
 ```
 
-Prefer rootless BuildKit/Kaniko/buildah over privileged dind whenever you can; privileged containers weaken the isolation that ephemeral pods give you.
+Prefer rootless BuildKit/Buildah over privileged dind whenever you can; privileged containers weaken the isolation that ephemeral pods give you.
 
 ---
 
@@ -435,7 +452,9 @@ Self-hosted runners are the most common foot-gun in GitHub Actions security. The
 On a public repo, anyone can open a PR from a fork. If that PR's workflow runs on your self-hosted runner, the PR author's code runs on your machine, inside your network, possibly with cached credentials. This is remote code execution by design. Mitigations:
 
 - Use **GitHub-hosted runners** (fresh, isolated VMs) for anything triggered by untrusted PRs.
-- If you must self-host, require approval: use the `pull_request_target` carefully, environment **required reviewers**, or the org setting **"Require approval for all outside collaborators / first-time contributors."**
+- Gate fork PR runs behind approval. Set the repo/org Actions policy **"Require approval for all external contributors"** (or "all outside collaborators") so a maintainer must approve each fork PR run before any workflow executes.
+- Do not reach for `pull_request_target` as a workaround: it runs with the **base** repository's `GITHUB_TOKEN` and secrets and is a well-known privilege-escalation foot-gun if it checks out or executes the PR head. Avoid it on self-hosted runners entirely.
+- Use environment **required reviewers** and protected environments to gate any job that needs secrets.
 - Keep self-hosted runners for **private repos** and trusted, internal workflows.
 
 ### Always prefer ephemeral

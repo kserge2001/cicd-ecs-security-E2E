@@ -11,11 +11,11 @@ EXPOSE 80
 HEALTHCHECK CMD wget -qO- http://localhost/ || exit 1
 ```
 
-Real applications need a language-specific **build-and-test** stage that runs *before* the container is built (or as the first stage of a multi-stage build). That stage is where almost all the per-language differences live. Everything after the image is produced (scan, push to ECR, deploy to ECS via OIDC, environment promotion) is identical across languages.
+Real applications need a language-specific **build-and-test** stage that runs *before* the container is built (or as the first stage of a multi-stage build). That stage is where almost all the per-language differences live. Everything after the image is produced (scan, push to a per-environment ECR repo via OIDC, then release: ECS via the existing deploy job, or Kubernetes via an Argo CD GitOps commit, plus environment promotion) is identical across languages.
 
 The snippets below are GitHub Actions jobs you can paste alongside the existing `build-and-scan` job. They run unit tests, linters, and coverage, then either produce a build artifact that the Dockerfile copies in, or rely on a multi-stage Dockerfile that compiles inside the build.
 
-> Note on versions: action and tool versions reflect the 2025-2026 ecosystem. Pin to the latest patched release in your own repo and let Dependabot bump them.
+> Note on versions: action and tool versions reflect the 2025-2026 ecosystem. For supply-chain safety, pin third-party actions to a full commit SHA (with a trailing `# vX.Y.Z` comment) and let Dependabot bump both the SHA and the comment. Major-tag pins (`@v5`) are shown here for readability; some actions (e.g. setup-uv) no longer publish moving major tags at all, so a full version or SHA is required.
 
 ---
 
@@ -23,16 +23,16 @@ The snippets below are GitHub Actions jobs you can paste alongside the existing 
 
 ### Build tools
 - **Maven** (`pom.xml`) or **Gradle** (`build.gradle` / `build.gradle.kts`). Pick one per service.
-- JDK provisioned by `actions/setup-java@v4`, which has built-in dependency caching for both build tools.
+- JDK provisioned by `actions/setup-java@v5`, which has built-in dependency caching for both build tools.
 
 ### Dependency install + caching
 `setup-java` caches the local repository (`~/.m2` for Maven, `~/.gradle/caches` and wrapper for Gradle) automatically when you set the `cache` input. No separate `actions/cache` step is required.
 
 ```yaml
-- uses: actions/setup-java@v4
+- uses: actions/setup-java@v5
   with:
-    distribution: temurin   # Eclipse Temurin 21 LTS
-    java-version: '21'
+    distribution: temurin   # Eclipse Temurin LTS (21 or 25)
+    java-version: '21'      # 25 is the newer LTS (released Sept 2025)
     cache: maven            # or: gradle
 ```
 
@@ -98,7 +98,7 @@ build-and-test-java:
   runs-on: ubuntu-latest
   steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
+    - uses: actions/setup-java@v5
       with:
         distribution: temurin
         java-version: '21'
@@ -117,7 +117,7 @@ build-and-test-java:
 
 ### Build tools
 - **pip** + `requirements.txt`, **Poetry** (`pyproject.toml` + `poetry.lock`), or **uv** (`pyproject.toml` + `uv.lock`). uv is the fastest and increasingly the default for new projects.
-- Python provisioned by `actions/setup-python@v5` (has pip cache built in), or by `astral-sh/setup-uv@v6` for uv.
+- Python provisioned by `actions/setup-python@v5` (has pip cache built in), or by `astral-sh/setup-uv` for uv. Note: setup-uv stopped publishing moving major tags (`@v6` etc. no longer resolve); pin a full version or a commit SHA.
 
 ### Dependency install + caching
 **pip** (cache keyed on `requirements*.txt`):
@@ -125,17 +125,17 @@ build-and-test-java:
 ```yaml
 - uses: actions/setup-python@v5
   with:
-    python-version: '3.12'
+    python-version: '3.13'
     cache: pip
     cache-dependency-path: requirements*.txt
 - run: pip install -r requirements.txt
 ```
 
-**Poetry** (cache the virtualenv with `actions/cache`):
+**Poetry** (cache Poetry's package cache with `actions/cache`, keyed on `poetry.lock`):
 
 ```yaml
 - uses: actions/setup-python@v5
-  with: { python-version: '3.12' }
+  with: { python-version: '3.13' }
 - run: pipx install poetry
 - uses: actions/cache@v4
   with:
@@ -147,7 +147,7 @@ build-and-test-java:
 **uv** (built-in caching, keyed on `uv.lock`):
 
 ```yaml
-- uses: astral-sh/setup-uv@v6
+- uses: astral-sh/setup-uv@v8.1.0   # pin a full version (no moving major tag); SHA-pin in prod
   with:
     enable-cache: true
     cache-dependency-glob: uv.lock
@@ -174,10 +174,10 @@ mypy app
 A **wheel** (`.whl`) built with `python -m build` or `uv build`, or just the source tree copied into the image.
 
 ### Dockerfile pattern
-Use a **slim** base (`python:3.12-slim`), install only runtime deps, run as non-root. Note: serve WSGI/ASGI apps with **gunicorn** (sync, e.g. Django/Flask) or **uvicorn** / `gunicorn -k uvicorn.workers.UvicornWorker` (ASGI, e.g. FastAPI). Do not use the dev server in production.
+Use a **slim** base (`python:3.13-slim`), install only runtime deps, run as non-root. Note: serve WSGI/ASGI apps with **gunicorn** (sync, e.g. Django/Flask) or **uvicorn** / `gunicorn -k uvicorn.workers.UvicornWorker` (ASGI, e.g. FastAPI). Do not use the dev server in production.
 
 ```dockerfile
-FROM python:3.12-slim AS base
+FROM python:3.13-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt .
@@ -196,7 +196,7 @@ build-and-test-python:
   runs-on: ubuntu-latest
   steps:
     - uses: actions/checkout@v4
-    - uses: astral-sh/setup-uv@v6
+    - uses: astral-sh/setup-uv@v8.1.0   # pin a full version; no moving major tag exists
       with:
         enable-cache: true
         cache-dependency-glob: uv.lock
@@ -260,9 +260,11 @@ Multi-stage: build gems and precompile assets in a builder, copy into a slim run
 ```dockerfile
 FROM ruby:3.3-slim AS build
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
 COPY Gemfile Gemfile.lock ./
-RUN bundle install --without development test
+RUN bundle config set --local without 'development test' \
+    && bundle install --jobs 4
 COPY . .
 RUN RAILS_ENV=production SECRET_KEY_BASE=dummy bundle exec rake assets:precompile
 
@@ -299,15 +301,15 @@ build-and-test-ruby:
 
 ### Build tools
 - The **dotnet SDK** CLI: `dotnet restore`, `build`, `test`, `publish`.
-- SDK provisioned by `actions/setup-dotnet@v4`.
+- SDK provisioned by `actions/setup-dotnet@v5`. Target the current LTS, **.NET 10** (released Nov 2025; .NET 8 enters security-only maintenance in 2026 and is EOL Nov 2026).
 
 ### Dependency install + caching
 NuGet packages live under `~/.nuget/packages`. Enable lock files (`packages.lock.json`) and cache on them. `setup-dotnet` supports a `cache` input keyed on lock files.
 
 ```yaml
-- uses: actions/setup-dotnet@v4
+- uses: actions/setup-dotnet@v5
   with:
-    dotnet-version: '8.0.x'
+    dotnet-version: '10.0.x'
     cache: true
     cache-dependency-path: '**/packages.lock.json'
 - run: dotnet restore --locked-mode
@@ -331,17 +333,17 @@ dotnet format --verify-no-changes
 A framework-dependent or self-contained publish output from `dotnet publish -c Release -o out`. With trimming/AOT you can ship a single native binary.
 
 ### Dockerfile pattern
-Build with the **SDK** image, run on the **chiseled** ASP.NET runtime image. Chiseled images (`mcr.microsoft.com/dotnet/aspnet:8.0-jammy-chiseled`) are distroless-style: minimal, no shell, and run as a non-root user by default. For the smallest footprint use **trimming** (`PublishTrimmed`) or **Native AOT** (`PublishAot`, no JIT, no runtime) where your app supports it.
+Build with the **SDK** image, run on the **chiseled** ASP.NET runtime image. Chiseled images (`mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled`, built on Ubuntu 24.04 Noble) are distroless-style: minimal, no shell, no package manager, and run as a non-root user by default (UID 64198). For the smallest footprint use **trimming** (`PublishTrimmed`) or **Native AOT** (`PublishAot`, no JIT, no runtime) where your app supports it.
 
 ```dockerfile
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY *.csproj .
-RUN dotnet restore
+RUN dotnet restore --locked-mode      # same locked restore as CI
 COPY . .
-RUN dotnet publish -c Release -o /app
+RUN dotnet publish -c Release -o /app --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-jammy-chiseled
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled
 WORKDIR /app
 COPY --from=build /app .
 # chiseled image already runs as non-root (UID 64198)
@@ -356,9 +358,9 @@ build-and-test-dotnet:
   runs-on: ubuntu-latest
   steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-dotnet@v4
+    - uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: '8.0.x'
+        dotnet-version: '10.0.x'
         cache: true
         cache-dependency-path: '**/packages.lock.json'
     - run: dotnet restore --locked-mode
@@ -373,17 +375,17 @@ build-and-test-dotnet:
 
 ### Build tools
 - Package manager: **npm**, **pnpm**, or **yarn** (lockfiles: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
-- Node provisioned by `actions/setup-node@v4`, which caches the package manager's store. For pnpm, install it first with `pnpm/action-setup@v4`.
+- Node provisioned by `actions/setup-node@v5`, which caches the package manager's store. For pnpm, install it first with `pnpm/action-setup@v4`.
 
 ### Dependency install + caching
 `setup-node`'s `cache` input keys on the lockfile and caches the global store (npm cache / pnpm store / yarn cache). Use a clean, reproducible install (`npm ci`).
 
 ```yaml
 - uses: pnpm/action-setup@v4          # only if using pnpm
-  with: { version: 9 }
-- uses: actions/setup-node@v4
+  with: { version: 10 }
+- uses: actions/setup-node@v5
   with:
-    node-version: '22'                # current LTS
+    node-version: '24'                # current Active LTS (Node 22 is now maintenance)
     cache: pnpm                       # or: npm / yarn
 - run: pnpm install --frozen-lockfile # npm ci / yarn install --immutable
 ```
@@ -413,7 +415,7 @@ Multi-stage. Build with a full Node image, then copy only `dist/` and production
 
 ```dockerfile
 # Node server variant
-FROM node:22-slim AS build
+FROM node:24-slim AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && pnpm install --frozen-lockfile
@@ -421,7 +423,7 @@ COPY . .
 RUN pnpm build                 # tsc -> dist/
 RUN pnpm prune --prod
 
-FROM node:22-slim
+FROM node:24-slim
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
@@ -440,10 +442,10 @@ build-and-test-node:
   steps:
     - uses: actions/checkout@v4
     - uses: pnpm/action-setup@v4
-      with: { version: 9 }
-    - uses: actions/setup-node@v4
+      with: { version: 10 }
+    - uses: actions/setup-node@v5
       with:
-        node-version: '22'
+        node-version: '24'
         cache: pnpm
     - run: pnpm install --frozen-lockfile
     - name: Lint + typecheck
@@ -468,7 +470,7 @@ build-and-test-node:
 ```yaml
 - uses: actions/setup-go@v5
   with:
-    go-version: '1.23'
+    go-version: '1.25'
     cache: true                   # caches $GOMODCACHE and the build cache via go.sum
 - run: go mod download
 ```
@@ -493,11 +495,11 @@ go tool cover -func=coverage.out
 ```
 
 ### Linters / formatters
-- **golangci-lint** (aggregates govet, staticcheck, gofmt/gofumpt, errcheck, etc.). Use the official action.
+- **golangci-lint** (aggregates govet, staticcheck, gofmt/gofumpt, errcheck, etc.). Use the official action. Action v7+ runs golangci-lint v2; pin an explicit linter version for reproducible runs.
 
 ```yaml
-- uses: golangci/golangci-lint-action@v6
-  with: { version: latest }
+- uses: golangci/golangci-lint-action@v8
+  with: { version: v2.12.2 }   # golangci-lint v2.x; do not use floating "latest" in CI
 ```
 
 ### Artifact
@@ -511,7 +513,7 @@ CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o app ./cmd/app
 Multi-stage. Compile a static binary, then copy it into a tiny image: `scratch` (nothing but the binary) or `gcr.io/distroless/static:nonroot` (adds CA certs, tzdata, and a non-root user). Distroless is the safer default.
 
 ```dockerfile
-FROM golang:1.23 AS build
+FROM golang:1.25 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -534,10 +536,10 @@ build-and-test-go:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.25'
         cache: true
-    - uses: golangci/golangci-lint-action@v6
-      with: { version: latest }
+    - uses: golangci/golangci-lint-action@v8
+      with: { version: v2.12.2 }
     - name: Test + coverage
       run: go test -race -coverprofile=coverage.out ./...
     - name: Build
@@ -568,8 +570,8 @@ build-and-test-php:
     - uses: actions/cache@v4
       with:
         path: ~/.composer/cache
-        key: composer-${{ hashFiles('composer.lock') }}
-    - run: composer install --no-interaction --prefer-dist
+        key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+    - run: composer install --no-interaction --prefer-dist --no-progress
     - run: vendor/bin/phpstan analyse
     - run: vendor/bin/phpunit --coverage-clover coverage.xml
 ```
@@ -602,11 +604,11 @@ build-and-test-rust:
 
 | Language | Build tool | Test runner | Cache key strategy | Typical artifact | Base image (runtime) |
 |----------|-----------|-------------|--------------------|------------------|----------------------|
-| Java | Maven / Gradle | JUnit 5 (+JaCoCo) | `pom.xml` / `*.gradle*` (via setup-java) | fat jar / war | `eclipse-temurin:21-jre-alpine` or Jib |
-| Python | pip / Poetry / uv | pytest (+cov) | `requirements*.txt` / `poetry.lock` / `uv.lock` | wheel or source | `python:3.12-slim` |
+| Java | Maven / Gradle | JUnit 5 (+JaCoCo) | `pom.xml` / `*.gradle*` (via setup-java) | fat jar / war | `eclipse-temurin:21-jre` (LTS 21/25) or Jib |
+| Python | pip / Poetry / uv | pytest (+cov) | `requirements*.txt` / `poetry.lock` / `uv.lock` | wheel or source | `python:3.13-slim` |
 | Ruby | Bundler | RSpec / Minitest | `Gemfile.lock` (bundler-cache) | source (+ precompiled assets) | `ruby:3.3-slim` |
-| .NET | dotnet CLI | xUnit (+coverlet) | `packages.lock.json` | publish output / native binary | `aspnet:8.0-*-chiseled` |
-| Node / TS | npm / pnpm / yarn | Vitest / Jest | lockfile (via setup-node) | `dist/` (server) or static `dist/` (SPA) | `node:22-slim` or `nginx:alpine` |
+| .NET | dotnet CLI | xUnit (+coverlet) | `packages.lock.json` | publish output / native binary | `aspnet:10.0-noble-chiseled` |
+| Node / TS | npm / pnpm / yarn | Vitest / Jest | lockfile (via setup-node) | `dist/` (server) or static `dist/` (SPA) | `node:24-slim` or `nginx:alpine` |
 | Go | go toolchain | `go test` | `go.sum` | static binary | `distroless/static:nonroot` or `scratch` |
 | PHP | Composer | PHPUnit | `composer.lock` | source + `vendor/` | `php:8.3-fpm-alpine` |
 | Rust | Cargo | `cargo test` | `Cargo.lock` (rust-cache) | static binary | `distroless/cc` or `scratch` |
@@ -653,8 +655,9 @@ Cross-cutting tools used in this repo and how they fit:
 - **Snyk:** the repo already wires `snyk/actions/docker` to scan the built image (gated on `SNYK_TOKEN`, currently `continue-on-error`). Snyk also has per-ecosystem `snyk test` for source dependencies.
 - **Dependabot:** repo-level, language-aware. Add one `package-ecosystem` entry per stack in `.github/dependabot.yml` so it opens PRs to bump vulnerable/outdated deps and the GitHub Actions versions used by the pipeline.
 - **SonarQube:** the existing `sonarqube-scan-action` step handles SAST and quality gates; it understands most of these languages directly.
+- **SBOM:** generate a CycloneDX or SPDX SBOM for the built image and attach it to the release. Trivy (`trivy image --format cyclonedx`) or Syft (`anchore/sbom-action`) both produce one from the same image you scan. Store it as a build artifact (and, if you sign images, attach it as a Cosign attestation) so downstream consumers and audits can see exactly what shipped.
 
-Treat SCA the same way the repo treats container scanning: run it in `build-and-scan` so it gates the image before it is ever pushed to ECR.
+Treat SCA the same way the repo treats container scanning: run it in `build-and-scan` so it gates the image before it is ever pushed to ECR. Because the image is built once and promoted by immutable digest, the SBOM and scan results describe every environment that image lands in.
 
 ---
 
@@ -665,10 +668,12 @@ The language only changes the **build-and-test** stage. The backbone of the repo
 1. **Build once, immutable image.** Whatever the language, the result is a single OCI image built in CI. It is tagged with the commit SHA on `dev`/`qa` and with a bumped `vX.Y.Z` semver tag on `main` (see the `Determine version / image tag` step). The image is never rebuilt per environment.
 2. **Gates before promotion.** Unit tests, coverage, linters, SAST (SonarQube), and SCA/container scanning (Snyk/Trivy) all run in `build-and-scan`. PRs build and scan only (no AWS access); a failing gate blocks the merge.
 3. **Push to a per-environment ECR via OIDC.** On a real push, the branch maps to an environment, role, and ECR repo (`dev` / `qa` / `prod`). Credentials come from short-lived **GitHub OIDC** tokens (`id-token: write`) assuming an env-scoped IAM role. No long-lived AWS keys.
-4. **Deploy to ECS Fargate via OIDC.** The `deploy` job assumes the environment's role, renders the task definition with the new image (`amazon-ecs-render-task-definition`), and rolls it out with `amazon-ecs-deploy-task-definition` using `wait-for-service-stability: true`.
+4. **Deploy via the target's release mechanism, not by hand from CI.**
+   - **ECS Fargate (this repo's existing pipeline):** the `deploy` job assumes the environment's role, renders the task definition with the new image (`amazon-ecs-render-task-definition`), and rolls it out with `amazon-ecs-deploy-task-definition` using `wait-for-service-stability: true`.
+   - **Kubernetes (GitOps with Argo CD):** CI does not call `kubectl` or `helm upgrade` against the cluster. CI's last step is to write the new immutable image tag/digest into the environment's manifests (Kustomize overlay or Helm values) in the GitOps config repo and open/commit a change. Argo CD detects the commit and reconciles the cluster to match. The CI principal needs Git write access to the config repo, not cluster credentials.
 5. **Environment promotion through branches + GitHub Environments.** `dev` -> `qa` -> `main`(prod). The matching GitHub Environment carries the approval gate / wait timer, so promotion to prod can require a manual approval.
 
-In short: swap the static-nginx build for your language's build-and-test job, keep the same artifact contract (an image that listens on the container port the ECS task definition expects), and the entire scan -> push -> deploy -> promote machinery works unchanged.
+In short: swap the static-nginx build for your language's build-and-test job, keep the same artifact contract (an image that listens on the container port the task definition / pod spec expects), and the entire scan -> push -> deploy -> promote machinery (ECS via the existing deploy job, or Kubernetes via an Argo CD GitOps commit) works unchanged.
 
 ---
 
@@ -680,8 +685,8 @@ In short: swap the static-nginx build for your language's build-and-test job, ke
 - [ ] Add linter/formatter and static analysis steps and make them fail the build.
 - [ ] Produce the build artifact (jar / wheel / dist / binary) or compile inside a multi-stage Dockerfile.
 - [ ] Write a multi-stage Dockerfile: small/distroless or slim runtime base, **non-root** user, `EXPOSE` the right port, add a `HEALTHCHECK` or rely on the ECS/ALB health check.
-- [ ] Confirm the container listens on the port the ECS task definition / target group expects.
+- [ ] Confirm the container listens on the port the ECS task definition / target group (or k8s Service / container port) expects.
 - [ ] Add the ecosystem to SCA: native audit (`pip-audit`, `npm audit`, `govulncheck`, etc.) plus Trivy/Snyk on the image.
 - [ ] Add a `package-ecosystem` entry in `.github/dependabot.yml` (and keep the `github-actions` ecosystem entry).
 - [ ] Confirm Sonar (or your SAST) supports the language and the quality gate is wired.
-- [ ] Verify the rest of the pipeline is untouched: OIDC role assumption, per-env ECR push, ECS deploy, and environment promotion all still work.
+- [ ] Verify the rest of the pipeline is untouched: OIDC role assumption, per-env ECR push, release (ECS deploy job or Argo CD GitOps commit, not kubectl from CI), and environment promotion all still work.

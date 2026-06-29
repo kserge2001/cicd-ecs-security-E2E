@@ -243,10 +243,10 @@ jobs:
 > `if: github.event_name == 'push'` at the `deploy` job level (a `github.*` value, which
 > job-level `if:` *can* read).
 
-Also note: a secret used in a **step-level `if:`** must first be surfaced into `env`
-(the lab does `env: SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}` then `if: env.SONAR_TOKEN != ''`),
-because you cannot reference `secrets.*` directly in some `if:` contexts reliably and it
-keeps the secret out of the expression log.
+Also note: the `secrets` context **cannot** be used in any `if:` condition, job-level or
+step-level. To branch on whether a secret is configured, surface it into `env` first
+(the lab does `env: SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}` then `if: env.SONAR_TOKEN != ''`).
+This is the supported pattern and it also keeps the secret value out of the expression log.
 
 ### 2.6 Job outputs & the `needs` graph
 
@@ -440,6 +440,17 @@ role**. This is the single biggest security win over PATs/static keys.
    notifications). A pipeline you can't read is a pipeline you can't trust.
 8. **Rollback strategy.** Always have a one-step way back (redeploy previous immutable tag,
    ECS rolling back to the prior task-definition revision).
+9. **Promotion via reviewed change, not rebuild.** Moving an artifact from qa to prod should
+   be a reviewable, audited event (a PR, a tag, or a Git commit to a config/manifest repo),
+   not a fresh build. The change shows exactly which digest is moving and who approved it.
+10. **Separation of duties.** The identity that writes code should not be the identity that
+    self-approves its own production release. Enforce this with branch protection
+    (required reviewers, no self-approval where supported), GitHub Environment required
+    reviewers on prod, and per-environment OIDC roles so a dev-branch run cannot assume the
+    prod role.
+11. **Supply-chain integrity is part of the artifact.** Generate an SBOM, sign the image
+    (cosign, keyless via OIDC), and produce SLSA build provenance. Downstream, *verify* the
+    signature and provenance before deploy so only artifacts your pipeline built can ship.
 
 ### 3.2 Recommended stage order (and why)
 
@@ -470,12 +481,50 @@ flowchart TD
 - **Static scans before build** - secret/SAST/IaC scans need only source; running them early
   fails fast and keeps secrets out of any built artifact.
 - **Build before image scan** - you can only scan layers you've built.
-- **SBOM + sign right after build** - capture provenance for the *exact* artifact you'll ship.
+- **SBOM right after build, sign after push** - generate the SBOM for the exact artifact, and
+  sign by **digest** once the image is in the registry (cosign signs the registry digest, and
+  the signature is stored alongside it). Capture SLSA provenance for that same digest.
 - **Integration/e2e after build** - they're slow and need the runnable artifact; gate them
   behind the cheap checks.
 - **Push & deploy last, gated** - only validated artifacts reach a registry; only approved
   artifacts reach prod.
 - **Smoke test + rollback** - verify reality, and have an automatic exit if it's wrong.
+
+### 3.3 How the deploy actually happens: push-CD vs GitOps
+
+The CI half (build, test, scan, sign, push image) is the same everywhere. The CD half splits
+along how the target platform is updated:
+
+| Target | Enterprise norm | What CI does | What performs the deploy |
+| --- | --- | --- | --- |
+| **AWS ECS / Lambda / serverless** | Push-style CD from CI to a cloud API, authenticated by OIDC | Renders the new task definition with the immutable image and calls the deploy API | A short-lived, env-scoped IAM role assumed via OIDC (no static keys) |
+| **Kubernetes** | **GitOps** (Argo CD or Flux) | Bumps the image digest in a Git-tracked manifest/Helm/Kustomize repo (via PR) | An in-cluster controller that **pulls** the desired state from Git and reconciles |
+
+> **Kubernetes: use GitOps, not `kubectl` from CI.** Running `kubectl apply` (or `helm
+> upgrade`) directly from a CI runner is a known anti-pattern in mature orgs. It requires
+> handing long-lived cluster-admin credentials to CI, gives no single source of truth for
+> what is actually deployed, and makes drift and rollback ad hoc. The enterprise pattern is
+> **pull-based GitOps**: CI's only job at the end is to open a PR that updates the desired
+> image digest in a config repo. A controller running **inside** the cluster (Argo CD or
+> Flux) watches that repo and reconciles the live state to match. Benefits: the Git history
+> is the audit log and the approval gate, rollback is `git revert`, drift is detected and
+> corrected automatically, and the cluster never exposes credentials to CI. This lab targets
+> ECS, so it legitimately uses the push-CD column (env-scoped OIDC role calling the ECS API);
+> if it were Kubernetes, the deploy step would be replaced by a manifest-bump PR consumed by
+> Argo CD or Flux.
+
+### 3.4 Policy-as-code gates
+
+Mature pipelines do not rely on a reviewer remembering a rule. Encode the rules as code and
+fail the build automatically:
+
+- **Admission / deploy gates:** OPA/Gatekeeper or Kyverno (Kubernetes), or Conftest (OPA) run
+  in CI against rendered manifests / Terraform plans, to block non-compliant config.
+- **Severity thresholds** for SAST/SCA/container scans live in the workflow (version-controlled),
+  not in per-reviewer judgment (see §6).
+- **Provenance/signature verification at deploy time:** require a valid cosign signature and
+  SLSA provenance for the exact digest before it is allowed to run (e.g., Kyverno image
+  verification, or cosign `verify` in the deploy job).
 
 ---
 
@@ -495,11 +544,11 @@ flowchart TD
 | SCA / deps | Snyk, `npm audit`, Dependabot | **Block critical**, warn lower | Known CVEs in deps |
 | Secret scan | gitleaks, trufflehog | **Block** | A leaked secret is an incident |
 | Container scan | Trivy, Snyk, Grype | **Block fixable critical**, warn else | Vulns in image layers |
-| IaC scan | tfsec, checkov, Trivy IaC | **Block on policy violations** | Misconfigured cloud |
+| IaC scan | Trivy config, checkov (tfsec is deprecated into Trivy) | **Block on policy violations** | Misconfigured cloud |
 | SBOM | syft | Warn (artifact) | Provenance, audit |
-| Sign | cosign | **Block** if signing fails | Supply-chain integrity |
 | Publish | docker push / ECR | **Block** | The promotion step |
-| Deploy | ECS deploy action | **Block** | The release |
+| Sign + provenance | cosign, attest-build-provenance | **Block** if signing fails | Sign/attest the pushed digest (supply-chain integrity) |
+| Deploy | ECS deploy action (push-CD) or GitOps manifest-bump (K8s) | **Block** | The release |
 | Smoke test | curl health endpoint | **Block → rollback** | Catch bad releases |
 | Notify | Slack, email | Never blocks | Observability |
 
@@ -565,7 +614,8 @@ CodeQL alternative (emits SARIF to the Security tab):
 ### 4.6 SCA / dependency scan
 
 ```yaml
-- uses: snyk/actions/node@master
+# In production pin this to a full commit SHA, not @master (see §5.4).
+- uses: snyk/actions/node@<full-commit-sha>  # e.g. snyk/actions/node@<40-char-sha>
   env: { SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }} }
   with: { args: --severity-threshold=high }
 ```
@@ -575,8 +625,8 @@ CodeQL alternative (emits SARIF to the Security tab):
 ```yaml
 - uses: gitleaks/gitleaks-action@v2
   env: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }   # org only; OSS free
-# or trufflehog:
-- uses: trufflesecurity/trufflehog@main
+# or trufflehog (pin to a full commit SHA in production, not @main - see §5.4):
+- uses: trufflesecurity/trufflehog@<full-commit-sha>
   with: { extra_args: --only-verified }
 ```
 
@@ -595,23 +645,40 @@ CodeQL alternative (emits SARIF to the Security tab):
   with: { sarif_file: trivy.sarif }
 ```
 
-### 4.9 IaC scan (tfsec / checkov)
+### 4.9 IaC scan (Trivy / checkov)
 
 ```yaml
-- uses: aquasecurity/tfsec-action@v1.0.0      # scans Terraform
-- uses: bridgecrewio/checkov-action@v12
+# Trivy config scan covers Terraform, Dockerfile, and Kubernetes manifests.
+# (tfsec is deprecated: Aqua merged its checks into Trivy, so use Trivy's config mode.)
+- uses: aquasecurity/trivy-action@<full-commit-sha>
+  with:
+    scan-type: config
+    scan-ref: .
+    severity: CRITICAL,HIGH
+    exit-code: '1'
+# or checkov:
+- uses: bridgecrewio/checkov-action@<full-commit-sha>
   with: { directory: ., framework: terraform }
 ```
 
 ### 4.10 SBOM (syft) + image signing (cosign)
 
+Signing targets the **pushed digest** (see §4.11), so in a real pipeline the `cosign sign`
+step runs after the publish step, against `$REGISTRY/$REPO@<digest>`.
+
 ```yaml
+# id-token: write is required for cosign keyless signing (and for SLSA provenance).
 - uses: anchore/sbom-action@v0
   with: { image: app:ci, output-file: sbom.spdx.json }
 - uses: sigstore/cosign-installer@v3
-- run: cosign sign --yes "$IMAGE_DIGEST"   # keyless via OIDC
-  env: { COSIGN_EXPERIMENTAL: '1' }
+# Sign the image by DIGEST, never a mutable tag. Keyless is the default in cosign v2+
+# (no COSIGN_EXPERIMENTAL needed); the ephemeral key is bound to the workflow's OIDC identity.
+- run: cosign sign --yes "$REGISTRY/$REPO@$IMAGE_DIGEST"
 ```
+
+For SLSA build provenance, generate an in-toto attestation for the same digest. On
+GitHub-hosted runners the built-in `actions/attest-build-provenance` action produces a
+signed provenance attestation; the deploy/admission side can then require it.
 
 ### 4.11 Publish, deploy, smoke test, rollback
 
@@ -956,9 +1023,13 @@ push to main ▶ build-and-scan ──▶ bump vX.Y.Z + push git tag ──▶ p
 - [ ] **Concurrency** control (queue deploys, cancel stale CI).
 - [ ] Job outputs / artifacts pass the right data downstream.
 - [ ] **Observability**: status checks, SARIF in Security tab, run summaries, notifications.
-- [ ] A documented, one-step **rollback** (redeploy previous immutable revision/tag).
+- [ ] A documented, one-step **rollback** (redeploy previous immutable revision/tag; on K8s, `git revert` the manifest).
 - [ ] `timeout-minutes` set to bound hung jobs.
 - [ ] Branch protection requires the CI status check before merge.
+- [ ] **Supply chain:** SBOM generated, image **signed** (cosign), and **SLSA provenance** attested for the shipped digest.
+- [ ] Promotion to prod is a **reviewed change** (PR/tag), not a rebuild; **separation of duties** enforced (no self-approval of own prod release).
+- [ ] **Policy-as-code** gates (OPA/Conftest, Kyverno/Gatekeeper) block non-compliant config in CI/admission.
+- [ ] Kubernetes deploys use **GitOps** (Argo CD / Flux), not `kubectl`/`helm` from CI.
 
 ### 8.2 GitHub Actions security checklist
 
@@ -977,6 +1048,7 @@ push to main ▶ build-and-scan ──▶ bump vX.Y.Z + push git tag ──▶ p
 - [ ] **Required reviewers + wait timer** on the prod environment; branch protection on `main`.
 - [ ] Dependabot enabled for GitHub Actions to keep pinned SHAs current.
 - [ ] Scan results published as **SARIF**; explicit, version-controlled **block-vs-warn** policy.
+- [ ] Deploy step **verifies** the image's cosign signature and SLSA provenance before release.
 
 ---
 

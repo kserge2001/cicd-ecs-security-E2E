@@ -36,7 +36,7 @@ human approval gates.
 
 Deep-dive guides live in [`docs/`](docs/) (see the [docs index](docs/README.md)):
 - [CI/CD & GitHub Actions](docs/01-cicd-and-github-actions.md): pipeline design, what to include, pitfalls, security hardening.
-- [Deploy to EKS (existing cluster)](docs/02-deploy-to-eks.md): run this app on an existing EKS cluster via `kubectl`/kustomize.
+- [Deploy to EKS (GitOps with Argo CD)](docs/02-deploy-to-eks.md): run this app on an existing EKS cluster the enterprise way, pull-based with Argo CD.
 - [Pipelines by language](docs/03-pipelines-by-language.md): how the pipeline changes for Java, Python, Ruby, .NET, Node, Go.
 - [Testing strategy](docs/04-testing-strategy.md): smoke tests, post-sign-off tests, browser/DAST/load frameworks.
 - [Continuous delivery vs deployment](docs/05-continuous-deployment.md): what full CD looks and feels like, progressive delivery.

@@ -1,6 +1,12 @@
 # Testing strategy and quality gates
 
-This document is the testing and quality-gates reference for the **cicd-ecs-security-E2E** lab: a CI/CD + DevSecOps pipeline that builds containers, runs a layered test suite, and promotes through **dev -> qa -> prod** on AWS ECS Fargate via GitHub Actions.
+This document is the testing and quality-gates reference for the **cicd-ecs-security-E2E** lab: a CI/CD + DevSecOps pipeline that builds containers, runs a layered test suite, and promotes through **dev -> qa -> prod**.
+
+Two deployment models are in scope, because tests have to hook into whichever one delivers the image:
+- **ECS Fargate** via the existing GitHub Actions pipeline (CI calls AWS APIs to register a task definition and update the service; rollback is the ECS deployment circuit breaker or CodeDeploy blue/green).
+- **EKS via GitOps (Argo CD)**, the pattern in `02-deploy-to-eks.md`: CI never touches the cluster. CI bumps the image tag in the config (GitOps) repo, Argo CD reconciles the cluster to Git, `dev` auto-syncs and self-heals, and `qa`/`prod` are gated by config-repo PR approval plus manual Argo sync or sync windows.
+
+The distinction matters for the slow tests: post-deploy smoke, e2e, perf, and DAST run **against whatever Argo CD (or the ECS pipeline) actually rolled out**, and rollback is owned by the rollout controller, not by `kubectl` invoked from a CI job.
 
 The goal is simple: catch defects as early and as cheaply as possible (shift-left), but still run the slower, environment-dependent, and risk-based tests at the right gate before code reaches production.
 
@@ -72,11 +78,11 @@ flowchart TB
 
 The pipeline has three broad phases:
 
-1. **PR gate (fast feedback):** runs on every pull request, must be quick (target under ~10 minutes). These block the merge.
-2. **Pre-merge / merge-to-main + deploy to dev:** heavier tests plus the first real deploy and smoke test.
-3. **Promotion (after dev sign-off):** qa-class and prod-readiness tests run when a human (or scheduled job) promotes the artifact `dev -> qa`, then `qa -> prod` behind a manual approval.
+1. **PR gate (fast feedback):** runs on every pull request, must be quick (target under ~10 minutes). These block the merge. Fast, deterministic checks only: lint, type check, unit, SAST, SCA, secret scan, consumer contract tests.
+2. **Merge to main -> build + deploy to dev:** build the image once, scan it, push by digest. Then deliver to `dev`: ECS via the pipeline, or (k8s) CI bumps the image tag in the config repo and Argo CD auto-syncs `dev`. Heavier integration tests plus the first real smoke test follow the deploy.
+3. **Promotion (after dev sign-off):** qa-class and prod-readiness tests run when the artifact is promoted `dev -> qa`, then `qa -> prod`. Promotion is itself a reviewed change: for ECS the pipeline re-deploys the same digest behind a GitHub Environment approval; for k8s it is a **config-repo PR** that updates the qa/prod image tag, merged under CODEOWNERS, then synced by Argo CD (manual sync or sync window). The approval gate lives in those reviews, not in an ad-hoc CI step.
 
-> Key principle: we promote the **same immutable image digest** through environments. We do not rebuild between stages, we only re-test and re-configure.
+> Key principle: we promote the **same immutable image digest** through environments. We do not rebuild between stages, we only re-test and re-point the environment at the already-built digest.
 
 ### Promotion flow
 
@@ -84,15 +90,15 @@ The pipeline has three broad phases:
 flowchart LR
     PR["Pull request"] -->|"fast gates pass"| MERGE["Merge to main"]
     MERGE --> BUILD["Build + push image (digest)"]
-    BUILD --> DEV["Deploy to dev"]
-    DEV --> SMOKE1["Smoke test (dev)"]
+    BUILD --> DELIVER["Deliver to dev<br/>(ECS pipeline, or<br/>CI bumps tag -> Argo CD auto-syncs)"]
+    DELIVER --> SMOKE1["Smoke test (dev)"]
     SMOKE1 --> SIGNOFF{"Dev sign-off"}
-    SIGNOFF -->|approve| QA["Promote to qa"]
+    SIGNOFF -->|approve| QA["Promote to qa<br/>(Env approval, or<br/>config-repo PR + Argo sync)"]
     QA --> QATESTS["Integration, E2E, contract,<br/>regression, perf, DAST, a11y, UAT"]
     QATESTS --> APPROVE{"Manual approval gate"}
-    APPROVE -->|approve| PROD["Promote to prod"]
-    PROD --> SMOKE2["Smoke test (prod) + canary"]
-    SMOKE2 -->|fail| ROLLBACK["Auto rollback"]
+    APPROVE -->|approve| PROD["Promote to prod<br/>(same digest, gated sync)"]
+    PROD --> SMOKE2["Smoke test (prod) + canary analysis"]
+    SMOKE2 -->|fail| ROLLBACK["Auto rollback by the rollout controller<br/>(ECS circuit breaker / CodeDeploy,<br/>or Argo Rollouts)"]
 ```
 
 ### Test-to-stage mapping
@@ -167,11 +173,13 @@ They are **not** comprehensive. They are a fast tripwire so a broken deploy is c
           echo "::error::Health check never returned 200"
           exit 1
 
-      - name: Critical-path + synthetic login (k6 quick check)
+      - name: Install k6
         uses: grafana/setup-k6-action@v1
-      - run: k6 run --quiet tests/smoke/smoke.js
+      - name: Critical-path + synthetic login (k6 quick check)
+        run: k6 run --quiet tests/smoke/smoke.js
         env:
           BASE_URL: ${{ env.BASE_URL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}   # test-account secret, never inline
 
   rollback:
     needs: smoke
@@ -220,11 +228,15 @@ export default function () {
 }
 ```
 
+> The job above is the **ECS** path (CI owns the deploy, so CI can own the revert). The k6 step and rollback job both run only after the deploy job they depend on.
+
 **Rollback-on-failure guidance**
-- Prefer **automatic rollback** for `prod`: tie it to the smoke job's `if: failure()` and to ECS deployment circuit breakers / CodeDeploy canary health alarms.
-- ECS native option: enable `deploymentCircuitBreaker` with `rollback: true` so ECS itself reverts a failing rolling deploy.
-- For blue/green (CodeDeploy), wire a **CloudWatch alarm** on 5xx rate and latency so a bad canary auto-rolls back before shifting 100% of traffic.
-- Always capture the **previous stable task definition ARN** as a job output so rollback is deterministic.
+
+Prefer **automatic rollback driven by the rollout controller**, not a hand-rolled CI revert. Let the smoke/canary result feed the controller that owns the deploy:
+
+- **ECS (rolling):** enable `deploymentCircuitBreaker` with `rollback: true` so ECS itself reverts a failing deployment. The `if: failure()` job above is a backstop; capture the **previous stable task definition ARN** as a job output so even the manual path is deterministic.
+- **ECS (blue/green via CodeDeploy):** wire a **CloudWatch alarm** on 5xx rate and latency as a rollback trigger so a bad canary auto-rolls back before shifting 100% of traffic.
+- **EKS / GitOps:** do **not** `kubectl rollout undo` from CI. Argo CD's desired state is Git, so a manual `kubectl` change is drift that Argo will revert anyway. Instead use **Argo Rollouts** (analysis templates on the same smoke/SLO metrics) to auto-abort and roll back the canary, or revert the image-tag commit in the config repo and let Argo re-sync to the last good state.
 
 ---
 
@@ -267,7 +279,7 @@ pact-broker can-i-deploy \
 ### 4.6 Security: DAST, dependency/container re-scan, pen test gate
 - **DAST:** Dynamic scan of the running app (see section 6). ZAP full scan gates on `qa`.
 - **Dependency re-scan (SCA):** Re-run dependency scanning at promotion because **new CVEs are disclosed daily** against unchanged dependencies. A newly-critical CVE can block a promotion even with no code change.
-- **Container image re-scan:** Re-scan the image (Trivy, Grail/Grype, AWS ECR scanning) at promotion for OS-package CVEs.
+- **Container image re-scan:** Re-scan the image (Trivy, Grype, AWS Inspector / ECR enhanced scanning) at promotion for OS-package CVEs.
 - **Pen test gate:** Periodic or release-based manual penetration testing; a sign-off artifact is required for major releases. This is a process gate, not a CI step.
 - **Tooling:** OWASP ZAP, Burp Suite, Trivy, Grype, Snyk/Dependabot, AWS Inspector / ECR scan.
 
@@ -307,9 +319,9 @@ test('home page has no critical a11y violations', async ({ page }) => {
 - **Tooling:** GitHub Actions **environment protection rules** with required reviewers; a `prod` environment requires manual approval before the deploy job runs.
 
 ```yaml
-# Manual approval gate via a protected environment
+# Manual approval gate via a protected environment (ECS pipeline path)
   promote-prod:
-    needs: qa-tests
+    needs: [build, qa-tests]   # both must be in `needs` to read build's digest output
     runs-on: ubuntu-latest
     environment:
       name: production        # configured with "Required reviewers" in repo settings
@@ -317,6 +329,8 @@ test('home page has no critical a11y violations', async ({ page }) => {
     steps:
       - run: ./scripts/promote.sh --to prod --image-digest "${{ needs.build.outputs.digest }}"
 ```
+
+> GitOps (k8s) equivalent: there is no `promote.sh`. Promotion to prod is a **PR against the config repo** that updates the prod image tag to the approved digest, merged under CODEOWNERS, then synced by Argo CD (manual sync or sync window). The "required reviewers" gate becomes the config-repo review plus Argo RBAC on who can sync prod.
 
 ---
 
@@ -329,7 +343,7 @@ Current as of 2025-2026. **Playwright is the recommended default** for new E2E a
 | Framework | Browsers | Languages | Auto-wait | Parallel/shard | Killer feature | Best for |
 |---|---|---|---|---|---|---|
 | **Playwright** | Chromium, Firefox, WebKit | TS/JS, Python, Java, .NET | Yes (built-in) | Yes (native sharding) | Trace viewer, codegen, network mocking | Default cross-browser E2E in CI |
-| **Cypress** | Chromium-family, Firefox, WebKit (newer) | JS/TS | Yes (retry-ability) | Yes (Cypress Cloud) | Best-in-class DX, time-travel debugger, component testing | Front-end teams wanting great local DX, component tests |
+| **Cypress** | Chromium-family, Firefox, WebKit (experimental) | JS/TS | Yes (retry-ability) | Yes (Cypress Cloud) | Best-in-class DX, time-travel debugger, component testing | Front-end teams wanting great local DX, component tests |
 | **Selenium / WebDriver** | All major (via drivers) | Java, Python, C#, Ruby, JS, more | No (manual waits) | Yes (Selenium Grid) | W3C standard, widest language + browser + grid support | Legacy suites, broad browser matrices, polyglot orgs |
 | **WebdriverIO** | All major (WebDriver + DevTools) | JS/TS | Yes (auto-wait) | Yes | Mobile/native via Appium, big plugin ecosystem | Web + mobile under one runner |
 
@@ -426,13 +440,13 @@ The two are complementary: SAST shifts left and is fast; DAST proves real, runti
     steps:
       - uses: actions/checkout@v4
       - name: ZAP full scan against qa
-        uses: zaproxy/action-full-scan@v0.12.0
+        uses: zaproxy/action-full-scan@v0.13.0
         with:
           target: ${{ vars.QA_BASE_URL }}
           # rules file lets you downgrade noisy alerts from FAIL to WARN/IGNORE
           rules_file_name: .zap/rules.tsv
-          cmd_options: '-a'             # include alpha passive rules
-          fail_action: true            # gate the build on FAIL-level alerts
+          cmd_options: '-a'            # include alpha (beta/experimental) rules
+          fail_action: true           # gate the build on FAIL-level alerts
       - name: Upload ZAP report
         if: always()
         uses: actions/upload-artifact@v4
@@ -462,7 +476,7 @@ Current as of 2025-2026. **k6 (Grafana) is the recommended default**: scriptable
 
 | Tool | Script language | Protocols | CI thresholds | Distributed | Best for |
 |---|---|---|---|---|---|
-| **k6** | JavaScript (ES) | HTTP, WS, gRPC, browser (xk6) | **Native `thresholds`** | k6 Cloud / operator | CI-gated perf tests; engineer-friendly default |
+| **k6** | JavaScript (ES) | HTTP, WS, gRPC, browser (`k6/browser`, built in) | **Native `thresholds`** | Grafana Cloud k6 / k6-operator | CI-gated perf tests; engineer-friendly default |
 | **Gatling** | Scala / Java / Kotlin DSL | HTTP, WS, JMS | assertions | Gatling Enterprise | High-throughput JVM shops; rich HTML reports |
 | **Locust** | Python | HTTP, custom | assertions in code | master/workers | Python teams; complex custom user behavior |
 | **Apache JMeter** | XML + GUI (Groovy) | very broad (HTTP, JDBC, JMS, FTP...) | via plugins/assertions | distributed mode | Legacy, protocol breadth, GUI-driven teams |
@@ -550,11 +564,12 @@ API tests sit between unit and full E2E: fast, stable, and they exercise real co
 ### Schemathesis (property-based against OpenAPI)
 
 ```bash
-# Generates test cases from the spec and checks responses conform + no 5xx
+# Generates test cases from the spec and checks responses conform + no 5xx.
+# Non-zero exit on any failed check, so this gates the job.
 schemathesis run "$QA_BASE_URL/openapi.json" \
   --checks all \
-  --hypothesis-max-examples 100 \
-  --report
+  --max-examples 100 \
+  --report junit
 ```
 
 Schemathesis is powerful because it derives tests directly from the **OpenAPI contract**, so it stays in sync with the spec and surfaces undefined-status-code, schema-conformance, and server-error bugs automatically.

@@ -31,9 +31,13 @@ The crisp version:
 
 ### What changes operationally between delivery and deployment
 
-The only structural difference is the **removal of the manual approval step** to
-production. Everything else (testing, packaging, promotion) is identical. But
-that one change has large operational consequences:
+The headline difference is the **removal of the manual approval step** to
+production: in delivery a human pulls the trigger, in deployment the pipeline
+does. The pipeline mechanics (testing, packaging, promotion) are largely the
+same, but deployment is not just "delivery minus the button": it is only safe if
+the automated safety nets (strong tests, smoke checks, progressive rollout,
+auto-rollback) are actually in place to do the job the human used to do. That one
+change has large operational consequences:
 
 | Aspect | Continuous delivery (today) | Continuous deployment |
 | --- | --- | --- |
@@ -181,6 +185,13 @@ class of failure.
 Progressive delivery is the family of techniques that limit how many users see a
 new version at once, so a bad release hurts few people and can be reversed fast.
 
+> Kubernetes context: in the enterprise pattern these strategies do not run from
+> CI with `kubectl`. The desired state lives in a config repo and Argo CD
+> reconciles it (GitOps), while **Argo Rollouts** or **Flagger** drive the
+> canary/blue-green traffic shifting and the automated metric analysis. See
+> [Deploy to EKS (GitOps with Argo CD)](02-deploy-to-eks.md), section 8, for the
+> `Rollout` and `AnalysisTemplate` that implement this.
+
 ### Blue-green
 
 Run two identical environments: **blue** (current) and **green** (new). Deploy
@@ -285,19 +296,24 @@ only if the new version's signals stay within thresholds.
 
 ### Tie to DORA metrics
 
-The four DORA metrics measure delivery performance. Continuous deployment with
-strong safety nets is what moves them into the "elite" range.
+The four DORA metrics measure software delivery performance. Continuous
+deployment with strong safety nets is what moves them into the top ("elite") tier.
+The exact band cutoffs shift slightly with each annual DORA report, so treat the
+column below as the elite-tier direction, not fixed contractual numbers.
 
-| DORA metric | What it measures | What good looks like |
+| DORA metric | What it measures | Elite tier (direction) |
 | --- | --- | --- |
-| **Deployment frequency** | How often you ship to prod | On-demand, multiple times per day |
-| **Lead time for changes** | Commit to running in prod | Less than one hour |
-| **Change failure rate** | % of deploys causing a degradation | 0-15% |
-| **Mean time to restore (MTTR)** | How fast you recover from a failed change | Less than one hour (auto-rollback makes this minutes) |
+| **Deployment frequency** | How often you ship to prod | On-demand (multiple deploys per day) |
+| **Lead time for changes** | Commit to running in prod | Less than one day (hours, not weeks) |
+| **Change failure rate** | % of deploys causing a degradation needing remediation | Roughly 5% (low single digits) |
+| **Failed deployment recovery time** | How fast you recover from a failed change | Less than one hour (auto-rollback makes this minutes) |
 
-Note the tension the safety nets resolve: pushing deployment frequency up while
-keeping change failure rate and MTTR low is exactly what canaries, smoke tests,
-and auto-rollback exist to do.
+Note: recent DORA reports renamed the fourth metric from "mean time to restore
+(MTTR)" to **failed deployment recovery time**, scoping it to recovery from a bad
+deploy specifically. The throughput metrics (frequency, lead time) and the
+stability metrics (change failure rate, recovery time) pull against each other;
+pushing deploy frequency up while keeping failure rate and recovery time low is
+exactly what canaries, smoke tests, and auto-rollback exist to do.
 
 ---
 
@@ -368,37 +384,79 @@ You have two reasonable options:
 
 ### Step 3: Add post-deploy smoke tests and auto-rollback
 
-Extend the `deploy` job so a failed smoke test reverts the service. Conceptually:
+Extend the `deploy` job so a failed smoke test reverts the service. Two correctness
+points the naive version gets wrong:
+
+1. Capture the currently-running task definition **before** you deploy. After the
+   deploy step runs, the new (failing) revision is the PRIMARY/ACTIVE one, so
+   querying for the "active" task definition after the fact gives you the bad
+   revision, not the good one you want to restore.
+2. There is no `APP_DOMAIN` GitHub variable in this repo. The host is the
+   per-environment subdomain on the Terraform `domain` value (prod is
+   `prod.<domain>`), so use a literal env var you set on the job, not an invented
+   `vars.*`.
 
 ```yaml
 # appended to the deploy job in .github/workflows/ci-cd.yml
+# (place "Capture current task definition" BEFORE the "Deploy to Amazon ECS" step)
+- name: Capture current task definition (for rollback)
+  id: prev
+  run: |
+    arn=$(aws ecs describe-services \
+      --cluster "${{ vars.ECS_CLUSTER }}" --services "${{ vars.ECS_SERVICE }}" \
+      --query 'services[0].taskDefinition' --output text)
+    echo "task_def=$arn" >> "$GITHUB_OUTPUT"
+
+# ... existing "Deploy to Amazon ECS" step runs here ...
+
 - name: Smoke test prod endpoint
   id: smoke
+  env:
+    # Set as a literal here; do NOT reference a non-existent vars.APP_DOMAIN.
+    SMOKE_URL: https://prod.example.com/healthz   # replace with prod.<your-domain>/healthz
   run: |
-    set -e
-    url="https://prod.${{ vars.APP_DOMAIN }}/healthz"
+    set -u
     for i in $(seq 1 10); do
-      code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+      code=$(curl -s -o /dev/null -w '%{http_code}' "$SMOKE_URL" || true)
       [ "$code" = "200" ] && echo "healthy" && exit 0
       sleep 6
     done
-    echo "smoke test failed (last code: $code)"; exit 1
+    echo "smoke test failed (last code: ${code:-none})"; exit 1
 
 - name: Roll back to previous task definition
   if: failure() && steps.smoke.outcome == 'failure'
   run: |
-    prev=$(aws ecs describe-services \
-      --cluster "${{ vars.ECS_CLUSTER }}" --services "${{ vars.ECS_SERVICE }}" \
-      --query 'services[0].deployments[?status==`ACTIVE`].taskDefinition | [0]' --output text)
     aws ecs update-service \
       --cluster "${{ vars.ECS_CLUSTER }}" --service "${{ vars.ECS_SERVICE }}" \
-      --task-definition "$prev" --force-new-deployment
+      --task-definition "${{ steps.prev.outputs.task_def }}" --force-new-deployment
 ```
 
 > Note: `wait-for-service-stability: true` is already set in the seeded deploy
 > step, so a deployment that never stabilizes will already fail the job. The
 > smoke test adds *behavioral* verification on top of *stability*, and the
-> rollback step gives you the automated undo that the human used to provide.
+> rollback step gives you the automated undo that the human used to provide. This
+> task-definition swap is a real but crude rollback; the production-grade version
+> is AWS CodeDeploy blue/green with a CloudWatch alarm rollback (Step 2), which
+> reverts automatically without a custom shell step.
+
+### If you run on Kubernetes instead of ECS
+
+The same delivery-to-deployment switch looks different under GitOps (see
+[02-deploy-to-eks.md](02-deploy-to-eks.md)). There is no GitHub Environment
+reviewer and no `kubectl` step to remove. Instead:
+
+- The promotion gate is a **Pull Request against the config repo**, enforced by
+  branch protection plus `CODEOWNERS` on `overlays/prod/` (for example, the SRE
+  team owns the prod overlay). Removing the human gate for prod means letting CI
+  commit the image-tag bump straight to the config repo's `main` (as dev already
+  does) instead of opening a PR, or letting Argo CD Image Updater write the tag.
+- The Argo CD `Application` for prod must move from manual sync to
+  `syncPolicy.automated` with `selfHeal` and `prune` (the dev pattern in
+  02-deploy-to-eks.md section 6), so a merged change reconciles without a human
+  clicking Sync.
+- Safety is provided by an **Argo Rollouts** `Rollout` (canary or blue-green)
+  with an `AnalysisTemplate` that auto-aborts and rolls back on an SLO breach,
+  which replaces the human approver exactly as the canary does on ECS.
 
 ### Trade-offs and a prerequisite warning
 
@@ -439,7 +497,8 @@ delivery.
 
 **Production safety**
 
-- [ ] Progressive delivery configured (canary or blue-green), not just rolling.
+- [ ] Progressive delivery configured (canary or blue-green), not just rolling:
+      CodeDeploy blue/green on ECS, or Argo Rollouts / Flagger on Kubernetes.
 - [ ] Post-deploy smoke tests on critical paths.
 - [ ] Defined SLOs and alerts that a machine can evaluate.
 - [ ] Automated rollback on SLO breach, tested and proven to work.

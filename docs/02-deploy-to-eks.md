@@ -1,130 +1,101 @@
-# Deploy to EKS (existing cluster)
+# Deploy to EKS the enterprise way (GitOps with Argo CD)
 
-This guide takes the same containerized app and runs it on an **existing Amazon EKS
-cluster** instead of ECS Fargate. It assumes the cluster already exists and that you
-have `kubectl`, `aws`, and (for templating) `kustomize` available. We do not provision
-a cluster here.
+This guide runs the same containerized app on an **existing Amazon EKS cluster** using
+the pattern enterprises actually use: **GitOps with Argo CD**. CI never touches the
+cluster. Instead, the desired state lives in Git, and an in-cluster controller (Argo CD)
+continuously reconciles the cluster to match Git.
 
-What stays the same vs the ECS lab:
+> Why not `kubectl apply` from CI? Push-based deploys are an anti-pattern at scale:
+> they put cluster-admin credentials in the CI runner, give you no drift detection,
+> no single source of truth, no automatic rollback to the declared state, and a weak
+> audit trail. GitOps fixes all of these.
 
-| Stays the same | Changes |
-|---|---|
-| Per-env ECR repos, OIDC deploy roles, build + image push, semver tagging | The deploy target: ECS service to a Kubernetes Deployment |
-| dev / qa / prod model and GitHub Environment approval gates | ALB created by the AWS Load Balancer Controller (via an Ingress) instead of Terraform |
-| SonarQube / Snyk scanning, branch protection | Deploy step uses `kubectl` / `kustomize` after `aws eks update-kubeconfig` |
+## 1. The model
 
-## 1. Get cluster credentials
-
-Point your local kubeconfig at the existing cluster, then confirm access:
-
-```bash
-aws eks update-kubeconfig --region <aws-region> --name <cluster-name>
-kubectl get nodes
-kubectl get pods -A
+```mermaid
+flowchart LR
+  subgraph App repo
+    A[push to dev/qa/main] --> B[CI: build + scan]
+    B --> C[push image to ECR]
+    C --> D[bump image tag in config repo]
+  end
+  subgraph Config repo (desired state)
+    D -->|dev: auto-commit| E[overlays/dev]
+    D -->|qa/prod: Pull Request + approval| F[overlays/qa, overlays/prod]
+  end
+  subgraph EKS cluster
+    G[Argo CD] -->|reconciles| H[dev ns]
+    G --> I[qa ns]
+    G --> J[prod ns]
+  end
+  E --> G
+  F --> G
 ```
 
-`update-kubeconfig` writes a context into `~/.kube/config` that calls `aws eks
-get-token` for short-lived credentials, so there is no static kubeconfig secret to
-manage. Your IAM identity must be granted access to the cluster (see section 6).
+Two repos (separation of concerns, the enterprise norm):
 
-## 2. If you ever need to create a cluster
-
-You said the cluster already exists, so skip this. If you ever need one, a single
-`eksctl` command creates the control plane, a node group, the VPC, and the OIDC
-provider, then wires kubeconfig for you:
-
-```bash
-eksctl create cluster \
-  --name <cluster-name> \
-  --region <aws-region> \
-  --nodes 2 --node-type t3.medium \
-  --with-oidc --managed
-
-# eksctl updates kubeconfig automatically; if not:
-aws eks update-kubeconfig --region <aws-region> --name <cluster-name>
-```
-
-That is it for cluster creation. Everything below is about deploying the app onto the
-cluster you already have.
-
-> ⚠️ The Ingress in section 4 needs the **AWS Load Balancer Controller** installed in
-> the cluster. Most existing clusters already have it. Check with
-> `kubectl get deploy -n kube-system aws-load-balancer-controller`. If it is missing,
-> install it once via Helm (chart `eks/aws-load-balancer-controller`) with an IRSA role.
-
-## 3. ECS vs EKS in one table
-
-| Concern | ECS Fargate (this lab) | EKS |
+| Repo | Owns | Who writes |
 |---|---|---|
-| Control plane | None to manage | Managed by AWS (hourly cost per cluster) |
-| Learning curve | Low | Higher (Kubernetes) |
-| Portability | AWS only | Portable across any k8s |
-| Ecosystem | AWS-native | Helm, Operators, Argo, etc. |
-| Best when | Simple services, small teams | Many services, k8s skills, multi-cloud |
+| App repo (this one) | Source code, Dockerfile, CI that builds/scans/pushes the image | Developers |
+| Config repo (GitOps) | Kubernetes manifests = the desired state, per environment | CI bumps image tags; humans review promotions |
 
-Use the cluster you have; this section is just context for interviews and design calls.
+Argo CD watches the **config repo** and makes the cluster match it. The only thing CI
+does to "deploy" is change a tag in Git.
 
-## 4. App manifests (kustomize: base + per-env overlays)
+## 2. Prerequisites
 
-One cluster, three **namespaces** (`dev`, `qa`, `prod`). Layout:
+- An existing EKS cluster you can reach. Bootstrapping Argo CD is the one time you use
+  direct cluster access:
+
+  ```bash
+  aws eks update-kubeconfig --region <aws-region> --name <cluster-name>
+  kubectl get nodes
+  ```
+
+  (If you ever need a cluster: `eksctl create cluster --name <name> --region <r> --with-oidc --managed`. That is the only "create a cluster" step. It is out of scope here.)
+
+- The **AWS Load Balancer Controller** in the cluster (for ALB Ingress). Verify:
+  `kubectl get deploy -n kube-system aws-load-balancer-controller`.
+- **ExternalDNS** (for Route 53 records from Ingress) and **External Secrets Operator**
+  (for pulling secrets from AWS Secrets Manager). Both are standard cluster add-ons.
+
+## 3. Bootstrap Argo CD
+
+Install once (Helm is the common enterprise install; pin the chart version):
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm upgrade --install argocd argo/argo-cd \
+  --namespace argocd --create-namespace \
+  --version <pinned-chart-version> \
+  -f argocd-values.yaml   # SSO/OIDC, RBAC, HA, ingress configured here
+```
+
+In production, Argo CD itself is managed by GitOps (the **app-of-apps** pattern): a
+root Application points at a folder of Application/ApplicationSet definitions so the
+platform is reproducible and auditable. Configure SSO (OIDC to your IdP) and RBAC
+rather than the local `admin` user.
+
+## 4. The config repo layout (Kustomize base + overlays)
 
 ```
-k8s/
+app-config/
   base/
-    namespace.yaml
-    deployment.yaml
+    deployment.yaml      # or a Rollout (see section 8)
     service.yaml
     ingress.yaml
     hpa.yaml
     kustomization.yaml
   overlays/
-    dev/kustomization.yaml
-    qa/kustomization.yaml
-    prod/kustomization.yaml
+    dev/   { kustomization.yaml, patches }   # namespace dev,  host dev.<domain>
+    qa/    { kustomization.yaml, patches }    # namespace qa,   host qa.<domain>
+    prod/  { kustomization.yaml, patches }    # namespace prod, host prod.<domain>
+  argocd/
+    project.yaml         # AppProject (guardrails)
+    applicationset.yaml  # generates one Application per env
 ```
 
-**base/deployment.yaml** (image is patched per env by the pipeline):
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: app
-spec:
-  replicas: 2
-  selector:
-    matchLabels: { app: app }
-  template:
-    metadata:
-      labels: { app: app }
-    spec:
-      containers:
-        - name: app
-          image: PLACEHOLDER_IMAGE # patched by the pipeline (ECR image:tag)
-          ports:
-            - containerPort: 80
-          readinessProbe:
-            httpGet: { path: /, port: 80 }
-          resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "250m", memory: "256Mi" }
-```
-
-**base/service.yaml**:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: app
-spec:
-  selector: { app: app }
-  ports:
-    - port: 80
-      targetPort: 80
-```
-
-**base/ingress.yaml** (the AWS Load Balancer Controller turns this into an internet-facing ALB with TLS):
+`base/ingress.yaml` (ALB via the AWS Load Balancer Controller, TLS from ACM):
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -140,162 +111,246 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: HOST_PLACEHOLDER # e.g. dev.your-domain.com, patched per env
+    - host: HOST_PLACEHOLDER     # patched per overlay
       http:
         paths:
           - path: /
             pathType: Prefix
-            backend:
-              service:
-                name: app
-                port: { number: 80 }
+            backend: { service: { name: app, port: { number: 80 } } }
 ```
 
-**base/hpa.yaml**:
+The Deployment, Service, and HPA are standard (image is set per overlay by
+`kustomize edit set image`, which CI runs). Each overlay sets its `namespace`, `host`,
+and `replicas`.
+
+## 5. Guardrails: the AppProject
+
+An `AppProject` restricts what these Applications may do (multi-tenancy and blast-radius
+control), a must-have in enterprise Argo CD:
 
 ```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
 metadata:
   name: app
+  namespace: argocd
 spec:
-  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: app }
-  minReplicas: 2
-  maxReplicas: 6
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target: { type: Utilization, averageUtilization: 70 }
+  sourceRepos:
+    - https://github.com/<org>/app-config.git   # only this repo
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: dev
+    - server: https://kubernetes.default.svc
+      namespace: qa
+    - server: https://kubernetes.default.svc
+      namespace: prod
+  clusterResourceWhitelist: []                   # no cluster-scoped resources
+  namespaceResourceWhitelist:
+    - { group: "apps", kind: Deployment }
+    - { group: "", kind: Service }
+    - { group: "networking.k8s.io", kind: Ingress }
+    - { group: "autoscaling", kind: HorizontalPodAutoscaler }
+  # Restrict prod deploys to a maintenance window if desired:
+  syncWindows:
+    - kind: allow
+      schedule: "0 9 * * 1-5"
+      duration: 8h
+      applications: ["app-prod"]
 ```
 
-**overlays/dev/kustomization.yaml** (qa and prod are the same idea with their own namespace/host):
+## 6. One Application per environment (ApplicationSet)
+
+`ApplicationSet` generates an Argo CD `Application` per env. The key enterprise nuance:
+**dev auto-syncs; qa and prod are gated** (manual sync and/or PR-gated desired state):
 
 ```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-namespace: dev
-resources:
-  - ../../base
-patches:
-  - target: { kind: Ingress, name: app }
-    patch: |
-      - op: replace
-        path: /spec/rules/0/host
-        value: dev.your-domain.com
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: app
+  namespace: argocd
+spec:
+  goTemplate: true
+  generators:
+    - list:
+        elements:
+          - { env: dev,  auto: "true"  }
+          - { env: qa,   auto: "false" }
+          - { env: prod, auto: "false" }
+  template:
+    metadata:
+      name: 'app-{{.env}}'
+    spec:
+      project: app
+      source:
+        repoURL: https://github.com/<org>/app-config.git
+        targetRevision: main
+        path: 'overlays/{{.env}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.env}}'
+      syncPolicy:
+        syncOptions: [ CreateNamespace=true ]
+  templatePatch: |        # dev gets automated self-healing sync; qa/prod stay manual
+    {{- if eq .auto "true" }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- end }}
 ```
 
-Apply by hand to test:
+- **dev**: `automated` + `selfHeal` + `prune`: any change merged to the dev overlay is
+  applied within minutes and drift is corrected automatically.
+- **qa / prod**: no `automated` policy. The new desired state lands via a reviewed PR,
+  then a human with the right Argo RBAC clicks Sync (or it is auto-synced inside a
+  `syncWindow`). This is where the approval gate lives now.
 
-```bash
-kubectl apply -k k8s/overlays/dev
-kubectl -n dev rollout status deploy/app
-```
+## 7. Promotion: how the image tag gets to Git (this is the deploy)
 
-DNS: point `dev/qa/prod.your-domain.com` at the ALB the Ingress creates. Use
-**ExternalDNS** in the cluster to manage Route 53 records automatically, or create the
-alias records manually once.
-
-## 5. Map the ECS pieces to EKS
-
-| ECS (this repo) | EKS equivalent |
-|---|---|
-| ECS service | Deployment |
-| Task definition / container def | Pod template in the Deployment |
-| ALB + target group + listeners | Ingress + AWS Load Balancer Controller |
-| ECS cluster | Namespace (dev/qa/prod) in the shared cluster |
-| Task execution role | IRSA / Pod Identity (only if the app needs AWS APIs) |
-| awslogs log driver | Container stdout, shipped by Fluent Bit / CloudWatch |
-| Route 53 alias (Terraform) | Ingress host + ExternalDNS |
-| Desired count | `replicas` + HPA |
-
-## 6. Pipeline changes
-
-Build and push to the per-env ECR stay exactly as they are today (same OIDC role,
-same image tag = semver for prod / SHA for dev/qa). Only the **deploy job** changes.
-
-Two one-time setup items so the deploy role can talk to the cluster:
-
-1. **IAM**: add `eks:DescribeCluster` to each env deploy role (the existing roles in
-   `iam.tf` already have ECR + ECS; just add this one action, and drop the ECS actions
-   when you fully move off ECS).
-2. **Kubernetes access**: grant the role access with an **EKS Access Entry** (the modern
-   replacement for the `aws-auth` ConfigMap), scoped to that env's namespace:
-
-```bash
-aws eks create-access-entry \
-  --cluster-name <cluster> \
-  --principal-arn arn:aws:iam::<acct>:role/pipeline-lab-full-cicd-dev-deploy
-
-aws eks associate-access-policy \
-  --cluster-name <cluster> \
-  --principal-arn arn:aws:iam::<acct>:role/pipeline-lab-full-cicd-dev-deploy \
-  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy \
-  --access-scope type=namespace,namespaces=dev
-```
-
-Then the deploy job (replaces the ECS deploy step):
+CI's only deployment responsibility is to change the image tag in the config repo. This
+replaces the old `kubectl` job entirely. Build, scan, and ECR push stay exactly as the
+ECS pipeline does them (same per-env ECR, same OIDC role, same `vX.Y.Z` for prod /
+commit SHA for dev/qa).
 
 ```yaml
-  deploy:
+  promote:
     needs: build-and-scan
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
-    permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC, env-scoped role)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout config repo
+        uses: actions/checkout@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          repository: <org>/app-config
+          token: ${{ secrets.CONFIG_REPO_TOKEN }}   # GitHub App token, write to config repo only
 
-      - name: Get cluster credentials
-        run: aws eks update-kubeconfig --region ${{ vars.AWS_REGION }} --name ${{ vars.EKS_CLUSTER }}
-
-      - name: Deploy
+      - name: Set image in the right overlay
         env:
-          NS: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
+          ENV: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
           IMAGE: ${{ needs.build-and-scan.outputs.image }}
         run: |
-          kubectl -n "$NS" set image deployment/app app="$IMAGE"
-          kubectl -n "$NS" rollout status deployment/app --timeout=120s
+          cd overlays/$ENV
+          kustomize edit set image app=$IMAGE
+
+      # dev: commit straight to main (auto-deploys via Argo). qa/prod: open a PR.
+      - name: Promote
+        env:
+          ENV: ${{ github.ref_name == 'main' && 'prod' || github.ref_name }}
+        run: |
+          if [ "$ENV" = "dev" ]; then
+            git commit -am "dev: deploy ${{ needs.build-and-scan.outputs.version }}"
+            git push
+          else
+            git switch -c promote/$ENV-${{ needs.build-and-scan.outputs.version }}
+            git commit -am "$ENV: promote ${{ needs.build-and-scan.outputs.version }}"
+            git push -u origin HEAD
+            gh pr create --fill --base main
+          fi
 ```
 
-Add a repo/env variable `EKS_CLUSTER` with the cluster name. Keep the same environment
-approval gates and prod semver tagging from the ECS pipeline.
+The **PR approval on the config repo is the enterprise promotion gate**, enforced with
+branch protection + `CODEOWNERS` (for example, the SRE team owns `overlays/prod/`). This
+is auditable in Git and decoupled from the build.
 
-> Prefer declarative over `kubectl set image`? Use `kubectl apply -k k8s/overlays/$NS`
-> after patching the image with `kustomize edit set image`.
+> Lower-touch alternative: **Argo CD Image Updater** watches ECR for new tags matching a
+> constraint and writes the tag back to Git itself, so CI does not need write access to
+> the config repo. Use it for dev/qa; keep PR-gated promotion for prod.
 
-## 7. GitOps alternative (recommended for k8s at scale)
+## 8. Progressive delivery (Argo Rollouts) instead of a plain Deployment
 
-Instead of the pipeline pushing with `kubectl` (push-based), commit the rendered
-manifests to a git repo and let **Argo CD** or **Flux** reconcile the cluster to match
-(pull-based). The CI job's only k8s responsibility becomes "bump the image tag in the
-manifests repo and open a PR". Benefits: git is the single source of truth, drift is
-auto-corrected, rollback is `git revert`, and the cluster credentials never live in CI.
-Trade-off: another component to run and learn.
+For real prod safety, replace the `Deployment` with an **Argo Rollouts** `Rollout` that
+does canary or blue-green with automated metric analysis and auto-rollback. This is what
+"safe continuous deployment" looks like on Kubernetes:
 
-## 8. Migration from the ECS setup, and teardown
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: { name: app }
+spec:
+  replicas: 4
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20
+        - pause: { duration: 2m }
+        - analysis:                 # query Prometheus; auto-abort on bad metrics
+            templates: [{ templateName: success-rate }]
+        - setWeight: 50
+        - pause: { duration: 5m }
+        - setWeight: 100
+  selector: { matchLabels: { app: app } }
+  template: { } # same pod spec as the Deployment
+```
 
-- Stand the app up on EKS in a `dev` namespace first; verify via the ALB host.
-- Cut DNS (`dev/qa/prod`) from the ECS ALBs to the EKS Ingress ALBs one env at a time.
-- Once traffic is on EKS, remove the ECS module usage from Terraform (the `modules/ecs-env`
-  calls) and the ECS actions from the deploy roles. Keep ECR and the OIDC roles.
-- Teardown of EKS workloads is `kubectl delete -k k8s/overlays/<env>`; the cluster
-  itself is managed outside this repo (you own it).
+`AnalysisTemplate` checks success rate / p95 latency against an SLO during the canary;
+if it breaches, Argo Rollouts automatically rolls back. Pair it with **Flagger** if you
+prefer that controller. This is how you remove the human from prod safely (see
+[continuous deployment](05-continuous-deployment.md)).
 
-## 9. EKS production readiness checklist
+## 9. Secrets the enterprise way (never plaintext in Git)
 
-- [ ] AWS Load Balancer Controller installed and healthy
-- [ ] Each env namespace created with resource quotas / limit ranges
-- [ ] Deploy roles granted via EKS Access Entries, scoped to their namespace
-- [ ] Readiness + liveness probes on every Deployment
-- [ ] HPA (and Cluster Autoscaler or Karpenter) configured
-- [ ] Ingress TLS via ACM, DNS via ExternalDNS
-- [ ] Logs to CloudWatch (Fluent Bit) and metrics to Prometheus/CloudWatch
-- [ ] NetworkPolicies and Pod Security Admission enforced
-- [ ] Image tags immutable (no `latest`); rollouts use `rollout status` gating
+GitOps means everything is in Git, so secrets need encryption or externalization:
+
+- **External Secrets Operator (recommended on AWS)**: store secrets in AWS Secrets
+  Manager / SSM, and an `ExternalSecret` syncs them into Kubernetes Secrets. The
+  operator authenticates with **IRSA**, so no static keys.
+
+  ```yaml
+  apiVersion: external-secrets.io/v1beta1
+  kind: ExternalSecret
+  metadata: { name: app-secrets, namespace: prod }
+  spec:
+    secretStoreRef: { name: aws-secretsmanager, kind: SecretStore }
+    target: { name: app-secrets }
+    data:
+      - secretKey: APP_ENV_SECRET
+        remoteRef: { key: pipeline-lab/prod/APP_ENV_SECRET }
+  ```
+
+- **Sealed Secrets / SOPS + KMS**: if you must keep the secret material in Git, store it
+  encrypted (only the in-cluster controller / a KMS key can decrypt). Use this when you
+  do not have a central secrets manager.
+
+If the app needs AWS APIs at runtime, give its `ServiceAccount` an **IRSA** role, not a
+key in a secret.
+
+## 10. Map the ECS pieces to the GitOps/EKS world
+
+| ECS (this repo) | GitOps on EKS |
+|---|---|
+| ECS service | Deployment or Rollout (in the config repo) |
+| Task definition | Pod template |
+| ALB + target group + listeners | Ingress + AWS Load Balancer Controller |
+| ECS cluster | Namespace (dev/qa/prod) |
+| `amazon-ecs-deploy-task-definition` in CI | CI bumps the image tag in Git; Argo CD deploys |
+| GitHub Environment approval gate | PR approval + CODEOWNERS on the config repo (and Argo manual sync / sync windows) |
+| Task execution role | IRSA / Pod Identity |
+| Route 53 alias (Terraform) | Ingress host + ExternalDNS |
+| Manual rollback | `git revert` (Argo reconciles back) or Argo Rollouts auto-rollback |
+
+## 11. Why this is the real pattern
+
+- **Single source of truth**: the cluster's desired state is a Git repo. Drift is
+  detected and (for dev) auto-corrected.
+- **No cluster credentials in CI**: the pull-based controller holds access, not the
+  runner. Smaller attack surface.
+- **Auditable promotion**: every prod change is a reviewed, signed PR with history.
+- **Trivial rollback / DR**: `git revert`, or rebuild a cluster and point Argo at the
+  same repo to restore the entire platform state.
+- **Separation of duties**: developers change code, platform/SRE owns prod overlays via
+  CODEOWNERS, Argo RBAC governs who can sync.
+
+## 12. Enterprise GitOps readiness checklist
+
+- [ ] Separate app repo and config (GitOps) repo
+- [ ] Argo CD installed via GitOps (app-of-apps), SSO + RBAC, HA mode
+- [ ] AppProject restricting repos, destinations, and resource kinds
+- [ ] ApplicationSet: dev auto-sync + self-heal; qa/prod manual or sync-window gated
+- [ ] Promotion via PR + branch protection + CODEOWNERS on `overlays/prod`
+- [ ] CI has write access only to the config repo (GitHub App), never cluster admin
+- [ ] Argo Rollouts (or Flagger) for prod canary/blue-green with metric analysis + auto-rollback
+- [ ] Secrets via External Secrets Operator (IRSA) or Sealed Secrets/SOPS, never plaintext in Git
+- [ ] Ingress TLS via ACM, DNS via ExternalDNS, image tags immutable (no `latest`)
+- [ ] Argo notifications + health dashboards; alert on OutOfSync / degraded
