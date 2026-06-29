@@ -9,13 +9,13 @@ human approval gates.
 ## What it builds
 
 **AWS**
-- One VPC (public subnets across 2 AZs, IGW) — Fargate with public IPs, no NAT.
+- One VPC (public subnets across 2 AZs, IGW) - Fargate with public IPs, no NAT.
 - Per environment: ALB (HTTP→HTTPS redirect, HTTPS listener w/ ACM wildcard cert),
   target group, ECS cluster + Fargate service + task definition, CloudWatch logs,
   Route 53 alias `<env>.<domain>`.
 - **3 ECR repos** (one per env) for access separation.
 - **3 OIDC deploy roles**, each scoped to its own environment/branch and its own ECR
-  repo (least privilege — the dev pipeline cannot touch prod), plus a shared ECS
+  repo (least privilege - the dev pipeline cannot touch prod), plus a shared ECS
   task execution role.
 
 **GitHub**
@@ -34,10 +34,15 @@ human approval gates.
 
 ## Documentation
 
-Deep-dive guides live in [`docs/`](docs/):
-- [CI/CD & GitHub Actions](docs/01-cicd-and-github-actions.md) — pipeline design, what to include, pitfalls, security hardening.
-- [Self-hosted Kubernetes](docs/02-self-hosted-kubernetes.md) — build your own cluster with `kubeadm` (and k3s).
-- [Deploy to EKS instead of ECS](docs/03-deploy-to-eks.md) — take this app to Kubernetes on AWS.
+Deep-dive guides live in [`docs/`](docs/) (see the [docs index](docs/README.md)):
+- [CI/CD & GitHub Actions](docs/01-cicd-and-github-actions.md): pipeline design, what to include, pitfalls, security hardening.
+- [Self-hosted Kubernetes](docs/02-self-hosted-kubernetes.md): build your own cluster with `kubeadm` (and k3s).
+- [Deploy to EKS instead of ECS](docs/03-deploy-to-eks.md): take this app to Kubernetes on AWS.
+- [Pipelines by language](docs/04-pipelines-by-language.md): how the pipeline changes for Java, Python, Ruby, .NET, Node, Go.
+- [Testing strategy](docs/05-testing-strategy.md): smoke tests, post-sign-off tests, browser/DAST/load frameworks.
+- [Continuous delivery vs deployment](docs/06-continuous-deployment.md): what full CD looks and feels like, progressive delivery.
+- [Runners: hosted, self-hosted, Kubernetes](docs/07-runners-and-scaling.md): runner types, self-hosted + ARC setup, scaling.
+- [Secrets and architecture](docs/08-secrets-and-architecture.md): sensitive data, plus security/scalability/governance concerns.
 
 ## Layout
 
@@ -60,4 +65,4 @@ terraform apply
 
 Tear down with `terraform destroy`.
 
-> ⚠️ `terraform.auto.tfvars` and `*.tfstate` contain secrets and are gitignored — never commit them.
+> ⚠️ `terraform.auto.tfvars` and `*.tfstate` contain secrets and are gitignored - never commit them.

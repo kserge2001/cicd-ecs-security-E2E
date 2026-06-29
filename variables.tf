@@ -1,4 +1,4 @@
-# variables.tf — root inputs
+# variables.tf - root inputs
 
 # ---------- AWS / GitHub providers ----------
 variable "aws_region" {

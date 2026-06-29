@@ -1,4 +1,4 @@
-# 03 — Deploy the App to Amazon EKS (instead of ECS Fargate)
+# 03 - Deploy the App to Amazon EKS (instead of ECS Fargate)
 
 > This guide explains how to deploy the **same containerized nginx app** from
 > `cicd-ecs-security-E2E` to **Amazon EKS (Kubernetes)** instead of **ECS Fargate**,
@@ -19,7 +19,7 @@
 | Concern | Today (ECS) | On EKS | Change? |
 |---|---|---|---|
 | VPC / subnets | `network.tf` (public subnets, IGW) | Same VPC, **subnets need ELB discovery tags** | ✅ mostly reused, add tags |
-| Image registry | `ecr.tf` — 3 per-env ECR repos | **Identical** | ⬜ no change |
+| Image registry | `ecr.tf` - 3 per-env ECR repos | **Identical** | ⬜ no change |
 | GitHub OIDC provider | `iam.tf` `aws_iam_openid_connect_provider.github` | **Identical** | ⬜ no change |
 | Per-env deploy roles | `iam.tf` `aws_iam_role.deploy` (per env) | Same roles, **swap ECS perms → `eks:DescribeCluster`**, map into cluster | 🔁 edit IAM policy |
 | Repo / branches / env gates | `github.tf` | **Identical** (approvals, semver, branch protection) | ⬜ no change |
@@ -44,18 +44,18 @@ with ALB/ACM/Route 53/CloudWatch/IAM. The difference is **how much platform you 
 | Ecosystem | AWS-native only. | **Huge.** Helm charts, Operators, Argo/Flux, Istio/Linkerd, Prometheus, KEDA, Karpenter, etc. |
 | Portability | Locked to AWS. Task defs don't move. | **Portable.** Manifests run on any conformant Kubernetes (GKE, AKS, on-prem). |
 | Multi-cloud / hybrid | No. | Yes (the main reason teams pick it). |
-| Cost (control plane) | $0 — no control plane charge. | **~$0.10/hr (~$73/mo) per cluster** for the managed control plane, on top of compute. |
+| Cost (control plane) | $0 - no control plane charge. | **~$0.10/hr (~$73/mo) per cluster** for the managed control plane, on top of compute. |
 | Cost (compute) | Fargate per-vCPU/GB. | Node groups (EC2, cheapest at scale) **or** EKS Fargate (per-pod, like ECS Fargate). |
 | Autoscaling | Service Auto Scaling (target tracking). | HPA + Cluster Autoscaler / **Karpenter** (best-in-class). |
 | Right tool when… | Small/medium AWS-only workloads, small team, you want shipping > platform-building. | Many teams/services, multi-cloud, you already know K8s, you need the CNCF ecosystem or advanced scheduling. |
 
 **Honest summary:** for *this lab* (one nginx app, three environments), **ECS is the
-simpler and cheaper choice** — that is exactly why the repo uses it. **EKS is more
+simpler and cheaper choice** - that is exactly why the repo uses it. **EKS is more
 powerful and portable**, and is worth it when you have a *fleet* of services, a team
 that speaks Kubernetes, or a hard requirement for portability/CNCF tooling. Don't move
 to EKS for prestige; move for portability, ecosystem, or scale.
 
-> ⚠️ **Pitfall — the control-plane bill.** EKS charges per *cluster-hour* even when
+> ⚠️ **Pitfall - the control-plane bill.** EKS charges per *cluster-hour* even when
 > idle. Three clusters (one per env) = ~$220/mo before a single pod runs. For a lab,
 > prefer **one cluster with three namespaces** (see §4).
 
@@ -72,7 +72,7 @@ flowchart TB
 
   subgraph VPC["Your VPC (reused from network.tf)"]
     subgraph Nodes["Compute"]
-      MNG["Managed Node Group<br/>(EC2) — or — EKS Fargate Profile"]
+      MNG["Managed Node Group<br/>(EC2) - or - EKS Fargate Profile"]
     end
     subgraph Addons["Core add-ons (run as pods)"]
       CNI["VPC CNI"]
@@ -109,9 +109,9 @@ trigger the version upgrades** (e.g. 1.29 → 1.30 → 1.31).
 
 > For the lab, a **small managed node group (2× `t3.small`/`t3.medium`)** is the most
 > straightforward. If you want the "serverless like ECS Fargate" experience, use a
-> **Fargate profile** for the app namespaces instead — note its caveats below.
+> **Fargate profile** for the app namespaces instead - note its caveats below.
 
-> ⚠️ **Pitfall — Fargate + DaemonSets + EBS.** EKS Fargate **can't run DaemonSets**
+> ⚠️ **Pitfall - Fargate + DaemonSets + EBS.** EKS Fargate **can't run DaemonSets**
 > and **can't mount EBS** (use EFS). The AWS LB Controller and CoreDNS still work, but
 > anything that assumes a node-level agent won't. If you go Fargate-only you must also
 > ensure CoreDNS is patched to run on Fargate.
@@ -132,18 +132,18 @@ Install these as **EKS Managed Add-ons** so AWS handles compatible versioning.
 A pod is **not** an EC2 instance, so it doesn't automatically have an IAM role. Two
 ways to grant AWS permissions to a pod:
 
-- **IRSA (IAM Roles for Service Accounts)** — the established mechanism. The cluster
+- **IRSA (IAM Roles for Service Accounts)** - the established mechanism. The cluster
   publishes an **OIDC provider**; you create an IAM role whose trust policy federates
   that OIDC provider and is scoped to a specific **`namespace:serviceaccount`**. You
   annotate the K8s ServiceAccount with the role ARN. Pods using that SA get temporary
   AWS creds via the projected token. **This is the same OIDC-federation pattern the
-  repo already uses for GitHub Actions** — just a different OIDC issuer.
-- **EKS Pod Identity** — newer (2024+), simpler. An `eks-pod-identity-agent` add-on
+  repo already uses for GitHub Actions** - just a different OIDC issuer.
+- **EKS Pod Identity** - newer (2024+), simpler. An `eks-pod-identity-agent` add-on
   plus an **association** mapping `namespace + serviceaccount → IAM role`. No per-role
   trust-policy editing, no OIDC thumbprint juggling, and it works across clusters
   without re-federating each one.
 
-> For new clusters in 2025–2026, **EKS Pod Identity is the friendlier default**.
+> For new clusters in 2025-2026, **EKS Pod Identity is the friendlier default**.
 > IRSA remains widely used and is required by some Helm charts (the AWS LB Controller
 > chart documents both). This guide shows **IRSA for the LB Controller** (most charts
 > still assume it) and notes Pod Identity as the alternative.
@@ -151,9 +151,9 @@ ways to grant AWS permissions to a pod:
 ### The cluster OIDC provider (don't confuse it with the GitHub one)
 There are now **two** OIDC providers in play:
 
-1. `token.actions.githubusercontent.com` — lets **GitHub Actions** assume AWS roles
+1. `token.actions.githubusercontent.com` - lets **GitHub Actions** assume AWS roles
    (already in `iam.tf`). **Unchanged.**
-2. `oidc.eks.<region>.amazonaws.com/id/<hash>` — lets **pods inside this cluster**
+2. `oidc.eks.<region>.amazonaws.com/id/<hash>` - lets **pods inside this cluster**
    assume AWS roles via IRSA. **New**, created when you enable IRSA on the cluster.
 
 ---
@@ -164,7 +164,7 @@ Use the community **[`terraform-aws-modules/eks/aws`](https://github.com/terrafo
 cluster, node group/Fargate profile, enables the OIDC provider, and wires managed
 add-ons. We **reuse the existing VPC/subnets** from `network.tf`.
 
-> ⚠️ **Pitfall — public subnets only.** The repo's `network.tf` creates **public
+> ⚠️ **Pitfall - public subnets only.** The repo's `network.tf` creates **public
 > subnets only** (Fargate-with-public-IP, no NAT). EKS works with public subnets, but
 > production usually puts **nodes in private subnets** and only the ALB in public ones.
 > For the lab, public subnets are fine; for prod, add private subnets + NAT.
@@ -174,7 +174,7 @@ The AWS Load Balancer Controller **auto-discovers** which subnets to place the A
 by reading tags. Add these to the subnets in `network.tf`:
 
 ```hcl
-# network.tf — add to aws_subnet.public.tags
+# network.tf - add to aws_subnet.public.tags
 resource "aws_subnet" "public" {
   # ...existing config...
   tags = {
@@ -188,7 +188,7 @@ resource "aws_subnet" "public" {
 # Private subnets (if you add them) get "kubernetes.io/role/internal-elb" = "1".
 ```
 
-> ⚠️ **Pitfall — missing subnet tags = "no subnets found."** The single most common
+> ⚠️ **Pitfall - missing subnet tags = "no subnets found."** The single most common
 > Ingress failure on EKS is the controller logging `couldn't auto-discover subnets`.
 > It means the `kubernetes.io/role/elb` (or `internal-elb`) tag is missing. Either tag
 > the subnets or set `alb.ingress.kubernetes.io/subnets` explicitly on the Ingress.
@@ -196,7 +196,7 @@ resource "aws_subnet" "public" {
 ### 3b. The cluster + compute (managed node group)
 
 ```hcl
-# eks.tf — new file in the repo root
+# eks.tf - new file in the repo root
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -216,7 +216,7 @@ module "eks" {
   # Enable the cluster OIDC provider (powers IRSA).
   enable_irsa = true
 
-  # Managed core add-ons — AWS keeps versions compatible with the cluster.
+  # Managed core add-ons - AWS keeps versions compatible with the cluster.
   cluster_addons = {
     coredns                = {}
     kube-proxy             = {}
@@ -301,7 +301,7 @@ resource "helm_release" "alb_controller" {
 ```
 
 ```hcl
-# providers.tf — add Helm + Kubernetes providers wired to the new cluster
+# providers.tf - add Helm + Kubernetes providers wired to the new cluster
 data "aws_eks_cluster_auth" "this" { name = module.eks.cluster_name }
 
 provider "kubernetes" {
@@ -318,12 +318,12 @@ provider "helm" {
 }
 ```
 
-> ⚠️ **Pitfall — `set` is deprecated in newer Helm provider.** In `hashicorp/helm`
+> ⚠️ **Pitfall - `set` is deprecated in newer Helm provider.** In `hashicorp/helm`
 > provider **v3**, the `set { name … value … }` block is replaced by a top-level
 > `set = [{ name = …, value = … }]` attribute. Match the syntax to your provider
 > version or the plan will error.
 
-> ⚠️ **Pitfall — controller version vs. cluster version.** The AWS LB Controller
+> ⚠️ **Pitfall - controller version vs. cluster version.** The AWS LB Controller
 > **v2.x** chart must be compatible with your EKS version. Always check the
 > compatibility matrix in the chart's docs before bumping either side.
 
@@ -342,7 +342,7 @@ NetworkPolicies + per-namespace RBAC** to approximate isolation. For real produc
 with strict compliance/blast-radius needs, **cluster-per-env** (or at least
 prod-separate) is the safer call.
 
-> ⚠️ **Pitfall — "namespace" ≠ "isolation."** Namespaces are a *naming/RBAC* boundary,
+> ⚠️ **Pitfall - "namespace" ≠ "isolation."** Namespaces are a *naming/RBAC* boundary,
 > not a security boundary by default. Without **NetworkPolicies**, pods in `dev` can
 > reach pods in `prod`. Add a default-deny NetworkPolicy per namespace if isolation
 > matters.
@@ -400,7 +400,7 @@ spec:
             limits:   { cpu: 500m, memory: 256Mi }
 ```
 
-### `base/service.yaml` (ClusterIP — the ALB targets pods directly)
+### `base/service.yaml` (ClusterIP - the ALB targets pods directly)
 ```yaml
 apiVersion: v1
 kind: Service
@@ -432,7 +432,7 @@ metadata:
     # external-dns.alpha.kubernetes.io/hostname: dev.example.com
 spec:
   rules:
-    - host: PLACEHOLDER_FQDN     # e.g. dev.example.com — set per overlay
+    - host: PLACEHOLDER_FQDN     # e.g. dev.example.com - set per overlay
       http:
         paths:
           - path: /
@@ -463,11 +463,11 @@ spec:
         name: cpu
         target: { type: Utilization, averageUtilization: 70 }
 ```
-> ⚠️ **Pitfall — HPA needs metrics-server.** The HPA reads CPU/memory from the
+> ⚠️ **Pitfall - HPA needs metrics-server.** The HPA reads CPU/memory from the
 > **metrics-server** add-on, which is **not installed by default** on EKS. Install it
 > (Helm chart `metrics-server`) or the HPA stays `<unknown>` and never scales.
 
-### `base/serviceaccount.yaml` (IRSA — only if the app calls AWS)
+### `base/serviceaccount.yaml` (IRSA - only if the app calls AWS)
 nginx serving static HTML needs **no** AWS access, so this SA can be plain. Shown for
 completeness if the app later needs S3/Secrets Manager/etc.
 ```yaml
@@ -523,7 +523,7 @@ metadata: { name: dev }
 ```
 > The `qa` and `prod` overlays are identical except `namespace`, the `host`
 > (`qa.example.com` / `example.com`), the ECR repo name (`…-qa` / `…-prod`), and prod's
-> higher `replicas`/HPA bounds — exactly the per-env knobs the ECS lab parameterizes.
+> higher `replicas`/HPA bounds - exactly the per-env knobs the ECS lab parameterizes.
 
 ### Route 53: ExternalDNS vs. manual alias
 - **ExternalDNS (recommended):** deploy the ExternalDNS controller (its own IRSA role
@@ -533,10 +533,10 @@ metadata: { name: dev }
   in lockstep with deploys.
 - **Manual alias (simplest):** keep a Terraform `aws_route53_record` per env pointing
   at the ALB. The catch: the ALB DNS name isn't known until the Ingress reconciles, so
-  you'd read it back (e.g. via a data source on the controller-created LB) — clunkier
+  you'd read it back (e.g. via a data source on the controller-created LB) - clunkier
   than ExternalDNS.
 
-> ⚠️ **Pitfall — ExternalDNS ownership.** Give ExternalDNS a `txtOwnerId` and a
+> ⚠️ **Pitfall - ExternalDNS ownership.** Give ExternalDNS a `txtOwnerId` and a
 > hosted-zone filter so it only manages records it created. Without that it can fight
 > other controllers (or your Terraform) over the same records.
 
@@ -555,10 +555,10 @@ metadata: { name: dev }
 | ACM cert on HTTPS listener | `certificate_arn` on listener | `alb.ingress.kubernetes.io/certificate-arn` |
 | `target_type = "ip"` (awsvpc) | target group | `alb.ingress.kubernetes.io/target-type: ip` (VPC CNI) |
 | **awslogs** driver → CloudWatch | task def `logConfiguration` | stdout/stderr → container logs; ship via **Fluent Bit / CloudWatch Container Insights** |
-| **Execution role** (pull image, write logs) | `aws_iam_role.ecs_execution` | Node's IAM role (managed node group) / pod execution role (Fargate) — handled by the EKS module |
+| **Execution role** (pull image, write logs) | `aws_iam_role.ecs_execution` | Node's IAM role (managed node group) / pod execution role (Fargate) - handled by the EKS module |
 | **Task role** (app's AWS perms) | (not used here) | **ServiceAccount + IRSA / Pod Identity** |
 | **Route 53 record** (alias→ALB) | `aws_route53_record` | **ExternalDNS** (or a manual alias record) |
-| Per-env **ECR repo** | `ecr.tf` | **Unchanged** — same per-env ECR repos |
+| Per-env **ECR repo** | `ecr.tf` | **Unchanged** - same per-env ECR repos |
 | Service Auto Scaling | (n/a here) | **HorizontalPodAutoscaler** (+ Cluster Autoscaler/Karpenter for nodes) |
 
 ---
@@ -579,7 +579,7 @@ Swap the ECS statements in `data.aws_iam_policy_document.deploy` for EKS. The EC
 and `GetAuthorizationToken` statements **stay** (the build job still pushes images).
 
 ```hcl
-# iam.tf — replace the "EcsDeploy" + "PassExecutionRole" statements with:
+# iam.tf - replace the "EcsDeploy" + "PassExecutionRole" statements with:
 statement {
   sid       = "EksDescribe"
   effect    = "Allow"
@@ -589,7 +589,7 @@ statement {
 # Keep EcrAuth + EcrPushPull exactly as-is (build job still needs them).
 ```
 
-> Permission to *call the Kubernetes API* is **not** an IAM thing — it's granted
+> Permission to *call the Kubernetes API* is **not** an IAM thing - it's granted
 > **inside the cluster** (next step). `eks:DescribeCluster` only lets the runner fetch
 > the endpoint/CA to build a kubeconfig.
 
@@ -597,9 +597,9 @@ statement {
 Two ways; **EKS Access Entries are preferred** (API-driven, no ConfigMap editing,
 supported natively by the EKS module via `authentication_mode = "API_AND_CONFIG_MAP"`).
 
-**Preferred — Access Entries (Terraform):**
+**Preferred - Access Entries (Terraform):**
 ```hcl
-# eks.tf — grant each env's deploy role rights, scoped to that env namespace.
+# eks.tf - grant each env's deploy role rights, scoped to that env namespace.
 module "eks" {
   # ...
   access_entries = {
@@ -621,7 +621,7 @@ module "eks" {
 This preserves the lab's **least-privilege-per-env** property: the dev pipeline can
 only touch the `dev` namespace, never `prod`.
 
-**Alternative — `aws-auth` ConfigMap (legacy):**
+**Alternative - `aws-auth` ConfigMap (legacy):**
 ```yaml
 # Map IAM role ARNs to Kubernetes groups (then bind groups via RBAC).
 apiVersion: v1
@@ -633,8 +633,8 @@ data:
       username: gha-dev
       groups: [ "dev-deployers" ]   # bind via a Role/RoleBinding in the dev namespace
 ```
-> ⚠️ **Pitfall — `aws-auth` is a single shared object.** One malformed edit can lock
-> **everyone** out of the cluster. Access Entries are per-principal and far safer —
+> ⚠️ **Pitfall - `aws-auth` is a single shared object.** One malformed edit can lock
+> **everyone** out of the cluster. Access Entries are per-principal and far safer -
 > prefer them on EKS 1.29+.
 
 ### 7c. The new `deploy` job
@@ -688,15 +688,15 @@ branch protection. The per-env GitHub variables `ECS_CLUSTER/ECS_SERVICE/
 ECS_TASK_FAMILY` in `github.tf` get **replaced** by `EKS_CLUSTER` + `NAMESPACE`
 variables.
 
-> ⚠️ **Pitfall — runner can't reach a private API endpoint.** GitHub-hosted runners
+> ⚠️ **Pitfall - runner can't reach a private API endpoint.** GitHub-hosted runners
 > are on the public internet. If you set the cluster endpoint to **private-only**,
 > `update-kubeconfig` will succeed but `kubectl` will time out. For the lab keep the
 > endpoint public (optionally IP-allowlisted); for prod use **self-hosted runners in
 > the VPC** or a private networking path.
 
-> ⚠️ **Pitfall — `rollout status` is your gate.** ECS had
+> ⚠️ **Pitfall - `rollout status` is your gate.** ECS had
 > `wait-for-service-stability: true`. The K8s equivalent is
-> `kubectl rollout status` — keep it so a bad image **fails the job** instead of
+> `kubectl rollout status` - keep it so a bad image **fails the job** instead of
 > silently leaving crash-looping pods.
 
 ---
@@ -716,14 +716,14 @@ controller notices and rolls out. CI never touches the cluster.
 |---|---|---|
 | Cluster creds | Live in GitHub (OIDC role mapped in) | **Never leave the cluster** |
 | Source of truth | The pipeline run | **Git** (declarative, auditable) |
-| Drift handling | None — manual `kubectl` edits persist | **Auto-corrected** to match Git |
+| Drift handling | None - manual `kubectl` edits persist | **Auto-corrected** to match Git |
 | Rollback | Re-run pipeline | `git revert` (or Argo UI) |
 | Setup cost | Low (just the deploy job) | Higher (install + bootstrap controller) |
 | Approval gates | GitHub Environments (already have these) | Git PR review **+** Argo sync windows |
 
 **For this lab:** start with the push-based `kubectl` job (least change, keeps the
 existing approval gates working as-is). **Graduate to Argo CD** once you have multiple
-services — it scales far better and removes cluster creds from CI. Argo's
+services - it scales far better and removes cluster creds from CI. Argo's
 `ApplicationSet` maps cleanly onto the dev/qa/prod overlays (one Application per
 namespace), and you keep GitHub Environment approvals on the **image-bump PR**.
 
@@ -750,7 +750,7 @@ namespace), and you keep GitHub Environment approvals on the **image-bump PR**.
 9. **Decommission ECS**: remove `module "env"` (the `ecs-env` module) and
    `aws_iam_role.ecs_execution` from `main.tf`/`iam.tf`; `terraform apply`.
 
-> ⚠️ **Pitfall — order of teardown.** Delete the **Kubernetes Ingresses first** (so
+> ⚠️ **Pitfall - order of teardown.** Delete the **Kubernetes Ingresses first** (so
 > the LB Controller deletes the ALBs it created) **before** `terraform destroy`.
 > Otherwise the controller-managed ALBs/target groups/SGs are orphaned and the VPC
 > destroy fails with "DependencyViolation."
@@ -770,14 +770,14 @@ The per-env ECR repos use `force_delete = true`, so images don't block destroy.
 
 **Cluster & networking**
 - [ ] Nodes in **private subnets** + NAT; only ALBs in public subnets.
-- [ ] API endpoint **private** (or public + tight IP allowlist) — not wide-open.
+- [ ] API endpoint **private** (or public + tight IP allowlist) - not wide-open.
 - [ ] Subnets correctly tagged (`kubernetes.io/role/elb` / `internal-elb`,
       `kubernetes.io/cluster/<name>`).
 - [ ] Multi-AZ node groups; PodDisruptionBudgets on critical workloads.
 - [ ] A clear **cluster version upgrade** runbook (1.29 → 1.30 → 1.31, one minor at a time).
 
 **Identity & access**
-- [ ] **IRSA / Pod Identity** for every pod that calls AWS — no node-wide creds.
+- [ ] **IRSA / Pod Identity** for every pod that calls AWS - no node-wide creds.
 - [ ] **Access Entries** (not `aws-auth`) for IAM→cluster mapping, least-privilege per env.
 - [ ] Namespace-scoped RBAC; CI deploy role limited to its own namespace.
 

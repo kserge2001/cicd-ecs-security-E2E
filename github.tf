@@ -31,7 +31,7 @@ resource "github_repository_file" "seed" {
   overwrite_on_create = true
 
   # Bootstrap-only: seed the file once. After that, main is PR-protected, so
-  # Terraform must NOT try to push content updates (it would be rejected) —
+  # Terraform must NOT try to push content updates (it would be rejected) -
   # all further changes to these files go through pull requests.
   lifecycle {
     ignore_changes = [content]
@@ -40,7 +40,7 @@ resource "github_repository_file" "seed" {
 
 # ---------- Branches: dev/qa/prod cut from main AFTER files exist ----------
 resource "github_branch" "env" {
-  # Skip any env that maps to "main" — main already exists (auto_init).
+  # Skip any env that maps to "main" - main already exists (auto_init).
   for_each      = { for k, v in var.environments : k => v if v.branch != "main" }
   repository    = github_repository.this.name
   branch        = each.value.branch
@@ -53,7 +53,7 @@ resource "github_branch" "env" {
 resource "github_branch_protection" "main" {
   repository_id = github_repository.this.node_id
   pattern       = "main"
-  enforce_admins = true # no direct pushes to main — even admins must use a PR
+  enforce_admins = true # no direct pushes to main - even admins must use a PR
   required_pull_request_reviews { required_approving_review_count = var.required_pr_approvals }
   required_status_checks {
     strict   = true
@@ -63,7 +63,7 @@ resource "github_branch_protection" "main" {
 }
 
 resource "github_branch_protection" "env" {
-  # Exclude any env mapping to "main" — it's already covered by the "main" rule above.
+  # Exclude any env mapping to "main" - it's already covered by the "main" rule above.
   for_each      = { for k, v in var.environments : k => v if v.protect_branch && v.branch != "main" }
   repository_id = github_repository.this.node_id
   pattern       = each.value.branch

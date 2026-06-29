@@ -1,4 +1,4 @@
-# network.tf — a fresh VPC with public subnets (Fargate w/ public IPs, no NAT)
+# network.tf - a fresh VPC with public subnets (Fargate w/ public IPs, no NAT)
 
 data "aws_availability_zones" "available" {
   state = "available"

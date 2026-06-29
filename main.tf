@@ -1,4 +1,4 @@
-# main.tf — root: one ecs-env stack per environment (dev/qa/prod)
+# main.tf - root: one ecs-env stack per environment (dev/qa/prod)
 
 module "env" {
   source   = "./modules/ecs-env"

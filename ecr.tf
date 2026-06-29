@@ -1,4 +1,4 @@
-# ecr.tf — one image registry per environment (separate access boundaries)
+# ecr.tf - one image registry per environment (separate access boundaries)
 
 resource "aws_ecr_repository" "app" {
   for_each             = var.environments
