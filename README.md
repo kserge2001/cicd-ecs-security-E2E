@@ -32,6 +32,13 @@ human approval gates.
 - **Prod releases** auto-bump a semver git tag (`vX.Y.Z`) and tag the image with it;
   `dev`/`qa` images are tagged by commit SHA.
 
+## Documentation
+
+Deep-dive guides live in [`docs/`](docs/):
+- [CI/CD & GitHub Actions](docs/01-cicd-and-github-actions.md) — pipeline design, what to include, pitfalls, security hardening.
+- [Self-hosted Kubernetes](docs/02-self-hosted-kubernetes.md) — build your own cluster with `kubeadm` (and k3s).
+- [Deploy to EKS instead of ECS](docs/03-deploy-to-eks.md) — take this app to Kubernetes on AWS.
+
 ## Layout
 
 | Path | Purpose |
