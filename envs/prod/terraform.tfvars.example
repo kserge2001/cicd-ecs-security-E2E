@@ -1,0 +1,25 @@
+# envs/prod/terraform.tfvars
+# export TF_VAR_github_token=ghp_xxx
+
+aws_profile    = "default"
+aws_region     = "us-east-1"
+github_owner   = "your-github-username"
+tfstate_bucket = "REPLACE_WITH_YOUR_TFSTATE_BUCKET"
+
+environment = "prod"
+branch      = "main" # production deploys from main
+subdomain   = "prod"
+
+# prod is gated: reviewer approval + a soak/wait window
+required_reviewers  = ["your-github-username"]
+wait_timer          = 1
+prevent_self_review = false # set true for a real team
+
+# prod usually runs more than one task
+desired_count = 2
+
+environment_secrets = {
+  APP_ENV_SECRET = "prod-secret"
+}
+
+ecr_force_delete = true

@@ -45,23 +45,45 @@ Deep-dive guides live in [`docs/`](docs/) (see the [docs index](docs/README.md))
 
 ## Layout
 
-| Path | Purpose |
-|---|---|
-| `*.tf` | Root config: VPC, ECR, IAM/OIDC, GitHub repo + pipeline wiring |
-| `modules/ecs-env/` | Reusable per-environment ECS/ALB/DNS stack |
-| `repo-seed/` | App + pipeline files seeded into the created repo |
-| `terraform.auto.tfvars.example` | Copy to `terraform.auto.tfvars` and fill in |
+The Terraform is organized as real-world multi-stack code: shared singletons in one
+stack, and one independent stack (its own state) per environment.
+
+```
+modules/
+  network/           reusable VPC (public subnets, IGW)
+  github-repo/        reusable "repo" module: repository + pipeline seed + branches + protection
+  ecr/                a single container image repository
+  ecs-env/            ECS service + ALB + target group + DNS for one env
+  oidc-deploy-role/   a per-env GitHub OIDC deploy role (least privilege)
+  app-environment/    composes ecr + ecs-env + oidc-deploy-role + the GitHub environment
+shared/               VPC, GitHub repo, OIDC provider, ECS exec role  (apply FIRST)
+envs/
+  dev/   qa/   prod/  one stack each: reads shared via remote state, calls app-environment
+```
+
+State lives in S3 with **native S3 locking** (`use_lockfile`, no DynamoDB), one key per
+stack. The reusable modules (`github-repo`, `ecr`, `ecs-env`, ...) can be used on their own.
 
 ## Usage
 
+Apply the shared stack first, then each environment. Each stack has its own
+`terraform.tfvars.example`, copy it to `terraform.tfvars` and fill in.
+
 ```bash
-cp terraform.auto.tfvars.example terraform.auto.tfvars   # then edit values
 export TF_VAR_github_token=ghp_xxx   # scopes: repo, workflow, read:org, delete_repo
-terraform init
-terraform plan
-terraform apply
+
+# 1) shared singletons (VPC, repo, OIDC provider, exec role)
+cd shared && cp terraform.tfvars.example terraform.tfvars   # edit, set your S3 bucket in backend.tf
+terraform init && terraform apply
+
+# 2) each environment (independent state)
+cd ../envs/dev  && cp terraform.tfvars.example terraform.tfvars && terraform init && terraform apply
+cd ../envs/qa   && cp terraform.tfvars.example terraform.tfvars && terraform init && terraform apply
+cd ../envs/prod && cp terraform.tfvars.example terraform.tfvars && terraform init && terraform apply
 ```
 
-Tear down with `terraform destroy`.
+Tear down in reverse: `envs/*` first, then `shared`.
 
-> ⚠️ `terraform.auto.tfvars` and `*.tfstate` contain secrets and are gitignored - never commit them.
+> ⚠️ Real `*.tfvars` and `*.tfstate` contain secrets and are gitignored. Only the
+> `*.tfvars.example` templates are committed. Set your S3 state bucket in each
+> stack's `backend.tf`.

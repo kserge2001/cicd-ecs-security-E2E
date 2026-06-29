@@ -1,0 +1,22 @@
+# envs/dev/terraform.tfvars
+# export TF_VAR_github_token=ghp_xxx
+
+aws_profile    = "default"
+aws_region     = "us-east-1"
+github_owner   = "your-github-username"
+tfstate_bucket = "REPLACE_WITH_YOUR_TFSTATE_BUCKET"
+
+environment = "dev"
+branch      = "dev"
+subdomain   = "dev"
+
+# dev auto-deploys (no reviewers)
+required_reviewers = []
+wait_timer         = 0
+
+environment_secrets = {
+  APP_ENV_SECRET = "dev-secret"
+}
+
+# Lab convenience
+ecr_force_delete = true

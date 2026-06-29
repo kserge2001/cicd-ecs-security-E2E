@@ -1,0 +1,32 @@
+# shared/terraform.tfvars - shared/global config.
+# export TF_VAR_github_token=ghp_xxx  (scopes: repo, workflow, read:org, delete_repo)
+
+aws_profile  = "default"
+aws_region   = "us-east-1"
+github_owner = "your-github-username"
+repo_name    = "cicd-ecs-security-E2E"
+
+# DNS + TLS (wildcard cert *.<domain> must live in aws_region)
+domain              = "example.com"
+hosted_zone_id      = "ZXXXXXXXXXXXXXXXXXXXX"
+acm_certificate_arn = "arn:aws:acm:us-east-1:111122223333:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Branch + protection per env (per-env infra is defined under envs/*).
+environments = {
+  dev  = { branch = "dev", protect_branch = false }
+  qa   = { branch = "qa", protect_branch = true }
+  prod = { branch = "main", protect_branch = true } # main = production
+}
+
+# Solo repo: keep CI checks required but no human PR approval. Use 1 for a team.
+required_pr_approvals = 0
+
+# Optional scanner tokens.
+repo_secrets = {
+  # SONAR_TOKEN    = "..."
+  # SONAR_HOST_URL = "https://sonarcloud.io"
+  # SNYK_TOKEN     = "..."
+}
+
+# Set false if the GitHub OIDC provider already exists in the account.
+create_oidc_provider = true
