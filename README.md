@@ -36,13 +36,12 @@ human approval gates.
 
 Deep-dive guides live in [`docs/`](docs/) (see the [docs index](docs/README.md)):
 - [CI/CD & GitHub Actions](docs/01-cicd-and-github-actions.md): pipeline design, what to include, pitfalls, security hardening.
-- [Self-hosted Kubernetes](docs/02-self-hosted-kubernetes.md): build your own cluster with `kubeadm` (and k3s).
-- [Deploy to EKS instead of ECS](docs/03-deploy-to-eks.md): take this app to Kubernetes on AWS.
-- [Pipelines by language](docs/04-pipelines-by-language.md): how the pipeline changes for Java, Python, Ruby, .NET, Node, Go.
-- [Testing strategy](docs/05-testing-strategy.md): smoke tests, post-sign-off tests, browser/DAST/load frameworks.
-- [Continuous delivery vs deployment](docs/06-continuous-deployment.md): what full CD looks and feels like, progressive delivery.
-- [Runners: hosted, self-hosted, Kubernetes](docs/07-runners-and-scaling.md): runner types, self-hosted + ARC setup, scaling.
-- [Secrets and architecture](docs/08-secrets-and-architecture.md): sensitive data, plus security/scalability/governance concerns.
+- [Deploy to EKS (existing cluster)](docs/02-deploy-to-eks.md): run this app on an existing EKS cluster via `kubectl`/kustomize.
+- [Pipelines by language](docs/03-pipelines-by-language.md): how the pipeline changes for Java, Python, Ruby, .NET, Node, Go.
+- [Testing strategy](docs/04-testing-strategy.md): smoke tests, post-sign-off tests, browser/DAST/load frameworks.
+- [Continuous delivery vs deployment](docs/05-continuous-deployment.md): what full CD looks and feels like, progressive delivery.
+- [Runners: hosted, self-hosted, Kubernetes](docs/06-runners-and-scaling.md): runner types, self-hosted + ARC setup, scaling.
+- [Secrets and architecture](docs/07-secrets-and-architecture.md): sensitive data, plus security/scalability/governance concerns.
 
 ## Layout
 
